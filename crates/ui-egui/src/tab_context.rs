@@ -3,6 +3,7 @@ use pdfcraft_engine::DocId;
 
 pub(crate) enum Action {
     NewWindow(DocId),
+    NewPane(DocId),
     Close(DocId),
     Reopen,
     Reveal(DocId),
@@ -13,6 +14,11 @@ impl crate::PdfCraftApp {
         match action {
             Action::NewWindow(id) => {
                 if let Err(error) = self.open_document_window(id) {
+                    self.notify_error(error);
+                }
+            }
+            Action::NewPane(id) => {
+                if let Err(error) = self.open_document_pane(id) {
                     self.notify_error(error);
                 }
             }

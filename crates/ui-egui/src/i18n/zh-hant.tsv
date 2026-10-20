@@ -2390,3 +2390,7 @@ animation effects	Off	關
 	Edits are shared; reading positions are independent	修改即時同步，閱讀位置互不影響
 	Post or cancel the unfinished comment before closing this view	請先發佈或取消尚未提交的註解，再關閉此視窗
 	Unsaved changes	有未儲存的修改
+	Open in Internal Window	在軟體內新增視窗
+	Tile document windows	平鋪文件視窗
+	Cascade document windows	重疊文件視窗
+	Primary view	主要檢視

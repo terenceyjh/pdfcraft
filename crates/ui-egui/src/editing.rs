@@ -899,6 +899,14 @@ impl PdfCraftApp {
 
     /// Close tab `index` for a close request, then ask about the next dirty document, or quit.
     fn close_and_continue(&mut self, ctx: &egui::Context, index: usize, req: CloseRequest) {
+        if matches!(req, CloseRequest::Quit | CloseRequest::All)
+            && let Some(view) = self.views.get(index)
+        {
+            // An explicit save/discard decision closes all views of that document. Cancel
+            // never enters this path and therefore keeps every reading window intact.
+            let id = view.id;
+            self.shared_windows.entries.retain(|w| !w.app.views.iter().any(|v| v.id == id));
+        }
         self.close_tab(index);
         // A newer prompt wins: the user may have started another close while a save was pending.
         if (req == CloseRequest::Quit || req == CloseRequest::All) && self.close_request.is_none() {
@@ -922,13 +930,14 @@ impl PdfCraftApp {
             ctx.request_repaint();
             false
         } else {
-            self.shutdown_recovery();
             self.quit(ctx);
             true
         }
     }
 
     fn quit(&mut self, ctx: &egui::Context) {
+        self.shared_windows.entries.clear();
+        self.shutdown_recovery();
         self.allow_quit = true;
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
@@ -963,6 +972,13 @@ impl PdfCraftApp {
             }
         }
         if !self.allow_quit && self.hide_primary_for_children(ctx) {
+            return;
+        }
+        if !self.allow_quit && self.has_document_panes() {
+            // An internal window can be the only view of a document. Native window close
+            // must include its drafts and dirty state, just like the explicit Quit command.
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.request_quit(ctx);
             return;
         }
         // `first_dirty` counts text typed into a field as an unsaved change.

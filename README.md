@@ -136,13 +136,21 @@ Search the whole document as you type, step through matches with <kbd>⌘G</kbd>
 
 ## Navigate long documents
 
-To read and annotate different chapters of the same PDF at once, choose **View → Open in New Window**,
-or right-click its tab and choose **Open in New Window**. The desktop views have independent reading
-positions, zoom, search and annotation tools, and share live edits, Save/Save As and undo/redo.
-Repeated requests focus the existing second view. Post or cancel an unfinished comment before closing
-its view; closing one view keeps the document open in the other. **Show primary window** brings the
-main window back. This is separate from the `--new-window` process option.
-See [shared-document windows](docs/shared-document-windows.md) for the development plan and validation.
+This local build defaults to Simplified Chinese. An explicitly saved language preference is retained;
+Preferences → Interface language lets you change it.
+
+Choose **View → Open in Internal Window** (**视图 → 在软件内新建窗口**), or right-click a document tab,
+to add movable, resizable document windows inside the app. Repeat for several views of the same PDF,
+or open other PDFs and add their views. The workspace offers tile/cascade arrangements and a picker
+for documents already open. Navigation, zoom, search, tools and drafts are independent; views of the
+same PDF share live edits, Save/Save As and undo/redo. Keyboard shortcuts follow the selected window.
+Post or cancel unfinished comments before closing. Closing one view keeps sibling views alive;
+cancelling an exit keeps their reading positions.
+
+**View → Open in New Window** creates additional native desktop windows, also without the old
+two-view limit. **Show primary window** brings the main window back. Independently launched
+`--new-window` processes remain separate sessions.
+See [multi-document workspace](docs/multi-document-workspace.md) for usage, development and validation.
 
 Right-click a PDF tab to close it, reopen the last closed file-backed tab, or reveal its file. Closing still asks about unsaved changes. Reopening reads the saved file from disk; it does not restore discarded edits. Reveal selects the file in Explorer or Finder. On Linux and FreeBSD it requests `org.freedesktop.FileManager1.ShowItems`, falling back to opening the containing directory with `xdg-open` when that service is unavailable. Reopen and Reveal are unavailable on the web; Reveal is also unavailable for pathless documents.
 

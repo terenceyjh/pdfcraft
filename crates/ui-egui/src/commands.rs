@@ -83,6 +83,9 @@ impl PdfCraftApp {
         if !self.secondary_command_allowed(spec.id) || (spec.id == "view.new_window" && cfg!(target_arch = "wasm32")) {
             return false;
         }
+        if matches!(spec.id, "view.tile_windows" | "view.cascade_windows") && !self.has_document_panes() {
+            return false;
+        }
         // Undo and Redo act on the Combine files list while its tab shows.
         if self.combine_showing() && matches!(spec.needs, commands::Needs::Undo | commands::Needs::Redo) {
             return self.combine_can_undo(spec.needs == commands::Needs::Undo);
@@ -155,13 +158,15 @@ impl PdfCraftApp {
         let active = self.active;
         let targets = active.map(|i| self.views[i].target_pages()).unwrap_or_default();
         match id {
-            "view.new_window" => {
+            "view.new_window" | "view.new_pane" => {
                 if let Some((_, doc)) = self.active_ids()
-                    && let Err(error) = self.open_document_window(doc)
+                    && let Err(error) = self.open_document_view(doc, id == "view.new_pane")
                 {
                     self.notify_error(error);
                 }
             }
+            "view.tile_windows" => self.arrange_document_panes(false),
+            "view.cascade_windows" => self.arrange_document_panes(true),
             "ui.dock.reset" => {
                 if let Err(error) = crate::docking::command(self, true, &serde_json::Value::Null) {
                     self.notify(error);

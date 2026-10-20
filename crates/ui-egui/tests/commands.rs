@@ -97,6 +97,9 @@ fn every_registered_command_is_implemented() {
         }
         // Give undo/redo something to do.
         app.apply_edit(pdfcraft_engine::Edit::RotatePages { pages: vec![0], degrees: 90 });
+        if matches!(spec.id, "view.tile_windows" | "view.cascade_windows") {
+            app.open_document_pane(app.views[0].id).unwrap();
+        }
         if spec.id == "edit.redo" {
             app.undo();
         }

@@ -11,7 +11,7 @@ areas = { A = "core", B = "view", C = "edit", D = "organize", E = "comment", F =
 
 [[feature]]
 id = "view.shared-document-windows"
-title = "Independent windows sharing one live PDF"
+title = "Multiple independent windows sharing one live PDF"
 area = "B"
 tier = "P1"
 milestone = "M3"
@@ -19,7 +19,19 @@ status = "shipped"
 commands = ["view.new_window"]
 tools = []
 evidence = ["crates/ui-egui/src/shared_windows.rs::two_views_share_live_edits_history_and_independent_navigation", "crates/ui-egui/src/shared_windows.rs::second_window_save_as_keeps_both_notes_and_one_save_target", "crates/ui-egui/tests/control.rs::shared_document_window_control_preserves_independent_views_and_last_close_guard"]
-notes = "Desktop second reading/annotation window over the same DocId and Session, independent view/draft/tool/widget/render state, shared edits/save/undo and last-view close protection. Opt-in ui.window and window-targeted control requests use the existing authenticated connection. Windows native and headless UI verification passed; see docs/shared-document-windows.md. Secondary immediate/WGPU screenshots report unsupported. Limited to two views per document; standalone --new-window processes and restart restoration are separate."
+notes = "Multiple desktop reading/annotation windows over the same DocId and Session, unique view ids, independent navigation/drafts/tools/widget/render state, shared edits/save/undo and last-view close protection. Repeated requests now add views. Existing opt-in authenticated control routes by view id. Windows native verification includes three extra native windows; see docs/multi-document-workspace.md. Native immediate/WGPU secondary screenshots report unsupported. Standalone --new-window processes and restart restoration remain separate."
+
+[[feature]]
+id = "view.document-workspace"
+title = "Movable internal windows for the same or different PDFs"
+area = "B"
+tier = "P1"
+milestone = "M3"
+status = "shipped"
+commands = ["view.new_pane", "view.tile_windows", "view.cascade_windows"]
+tools = []
+evidence = ["crates/ui-egui/tests/control.rs::internal_windows_mix_documents_and_only_the_focused_view_receives_navigation", "crates/ui-egui/tests/control.rs::internal_comment_inputs_publish_to_one_document_and_keep_unposted_notes_on_close", "crates/ui-egui/src/shared_windows.rs::cancelled_quit_preserves_all_internal_reading_positions", "crates/ui-egui/src/shared_windows.rs::native_close_protects_an_internal_only_document_and_its_unposted_note"]
+notes = "One application window contains resizable movable PDF child windows, a primary view, document picker, tile/cascade arrangements and selected-view keyboard routing. Same/different files can be mixed. Defaults to Simplified Chinese and preserves explicit saved language choices. Internal windows use the main opt-in input/inspection/screenshot tree and view-targeted state/set/command. Native window-close includes internal-only documents/drafts; cancelling quit preserves original windows. Layout and extra views are not restored across restart."
 
 # ==================================================================================================
 # A. Core document model and fidelity

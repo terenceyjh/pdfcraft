@@ -67,7 +67,7 @@ pub fn tab_strip(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                     app.combine_tab.focused = false;
                 }
                 // Keep the two icon buttons, Discord's text/padding and three gaps outside the scrolling tabs.
-                let controls_width = ui.fonts_mut(|f| f.layout_no_wrap("Discord".into(), theme::medium(13.0), t.text).size().x)
+                let controls_width = ui.fonts_mut(|f| f.layout_no_wrap(tl!("Join our Discord").into(), theme::medium(13.0), t.text).size().x)
                     + 2.0 * button
                     + 50.0
                     + window_controls::width(&controls.right);
@@ -154,6 +154,10 @@ pub fn tab_strip(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                                 let id = app.views[i].id;
                                 let reveal = cfg!(not(target_arch = "wasm32")) && doc.path.is_some();
                                 response.context_menu(|ui| {
+                                    if ui.button(tl!("Open in Internal Window")).clicked() {
+                                        action = Some(crate::tab_context::Action::NewPane(id));
+                                        ui.close();
+                                    }
                                     if cfg!(not(target_arch = "wasm32")) && ui.button(tl!("Open in New Window")).clicked() {
                                         action = Some(crate::tab_context::Action::NewWindow(id));
                                         ui.close();
@@ -304,7 +308,10 @@ pub fn tab_strip(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                         app.dialog = Some(Dialog::Shortcuts);
                     }
                     // One click to the community, from anywhere in the app.
-                    if widgets::ghost_button_sized(ui, "messages-square", "Discord", tab_h).on_hover_text(pdfcraft_engine::links::DISCORD).clicked() {
+                    if widgets::ghost_button_sized(ui, "messages-square", tl!("Join our Discord"), tab_h)
+                        .on_hover_text(pdfcraft_engine::links::DISCORD)
+                        .clicked()
+                    {
                         app.execute("help.discord");
                     }
                 });

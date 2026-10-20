@@ -39,8 +39,11 @@
 //! - `ui.open {path}`: accept a file open; native opens report `pending: true` until they
 //!   complete and are listed in `ui.state.pending_opens`.
 //! - `ui.screenshot {region?}`: PNG of the window (base64), optionally cropped to a rect.
-//! - `ui.window {action: state|open|set|command|close|hide-primary, doc?, ...}`: independent
-//!   second view. Input, inspect and state accept `window: <doc id>` through the same connection.
+//! - `ui.window {action: state|open|focus|set|command|close|hide-primary|show-primary, doc?, view?, kind?}`:
+//!   independent native or embedded views. `kind` is native (default) or embedded. Target a
+//!   specific view with its `view` id from document_windows, distinct from the shared `doc` id.
+//!   Native input/inspect/state and embedded state/set/command accept `window: <view id>`.
+//!   Embedded windows share the main widget tree and screenshot.
 //!   Secondary screenshots are unsupported by the immediate renderer and return a clear error.
 
 use std::collections::{HashMap, VecDeque};
@@ -310,7 +313,7 @@ impl Control {
 
     fn handle(&mut self, ctx: &egui::Context, host: &mut impl Host, method: &str, p: &Value) -> Handled {
         if let Some(target) = p.get("window") {
-            let Some(doc) = target.as_u64() else { return Handled::Now(Err("window must be a document id from ui.state.document_windows".into())) };
+            let Some(doc) = target.as_u64() else { return Handled::Now(Err("window must be a view id from ui.state.document_windows".into())) };
             let mut params = p.clone();
             if let Some(params) = params.as_object_mut() {
                 params.remove("window");
@@ -817,7 +820,7 @@ impl Host for crate::PdfCraftApp {
             .map(|c| json!({ "id": c.id, "label": c.label, "menu": c.menu, "enabled": self.command_enabled(c), "shortcut": c.shortcut.map(|s| s.label(cfg!(target_os = "macos"))) }))
             .collect();
         list.push(json!({"id": "ui.dock", "label": "Arrange Panel", "enabled": true, "params": "action, or operation/panel; move: target/zone/before; float/moveFloating: rect; resizeSplit: path/size; setStackOpen: open; resizeStack: height"}));
-        list.push(json!({"id": "ui.window", "label": "Document windows", "enabled": true, "params": "action=state|open|set|command|close|hide-primary, doc; set: key/value; command: id. Input/inspect/state also accept window=<doc id>. Secondary screenshots are unsupported."}));
+        list.push(json!({"id": "ui.window", "label": "Document windows", "enabled": true, "params": "action=state|open|focus|set|command|close|hide-primary|show-primary, doc/view; kind=native|embedded; set: key/value; command: id. Target by view id. Embedded windows share main input/inspect/screenshot."}));
         json!({ "commands": list })
     }
 

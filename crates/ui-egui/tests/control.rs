@@ -107,11 +107,12 @@ fn shared_document_window_control_preserves_independent_views_and_last_close_gua
     }
     ok(&mut h, &c, "ui.window", json!({"action":"hide-primary"}));
     assert_eq!(ok(&mut h, &c, "ui.state", json!({}))["primary_hidden"], true);
-    ok(&mut h, &c, "ui.window", json!({"action":"command","id":"view.new_window"}));
+    ok(&mut h, &c, "ui.window", json!({"action":"show-primary"}));
     h.run_steps(2);
     assert_eq!(ok(&mut h, &c, "ui.state", json!({}))["primary_hidden"], false);
     ok(&mut h, &c, "ui.command", json!({"id":"view.new_window"}));
-    assert_eq!(ok(&mut h, &c, "ui.window", json!({})).as_array().unwrap().len(), 1);
+    assert_eq!(ok(&mut h, &c, "ui.window", json!({})).as_array().unwrap().len(), 2);
+    assert_eq!(ok(&mut h, &c, "ui.window", json!({"action":"close","view":2}))["closed"], true);
     ok(&mut h, &c, "ui.command", json!({"id":"page.insert_blank"}));
     ok(&mut h, &c, "ui.command", json!({"id":"file.close"}));
     let state = ok(&mut h, &c, "ui.state", json!({}));
@@ -121,6 +122,116 @@ fn shared_document_window_control_preserves_independent_views_and_last_close_gua
     let close = ok(&mut h, &c, "ui.window", json!({"action":"close"}));
     assert_eq!(close["closed"], false);
     assert_eq!(close["close_prompt"], true);
+}
+
+#[test]
+fn internal_windows_mix_documents_and_only_the_focused_view_receives_navigation() {
+    let (mut h, c) = harness();
+    h.state_mut().set_option("mode", "read").unwrap();
+    h.state_mut().open_bytes("other.pdf", None, fixture(7)).unwrap();
+    for doc in [1, 1, 2] {
+        ok(&mut h, &c, "ui.window", json!({"action":"open","doc":doc,"kind":"embedded"}));
+    }
+    h.run_steps(4);
+    ok(&mut h, &c, "ui.window", json!({"action":"set","view":1,"key":"page","value":2}));
+    ok(&mut h, &c, "ui.window", json!({"action":"set","view":2,"key":"page","value":4}));
+    ok(&mut h, &c, "ui.window", json!({"action":"set","view":3,"key":"page","value":6}));
+    let state = ok(&mut h, &c, "ui.state", json!({}));
+    assert_eq!(state["active"]["page"], 1);
+    assert_eq!(state["document_windows"][0]["doc"], 1);
+    assert_eq!(state["document_windows"][1]["doc"], 1);
+    assert_eq!(state["document_windows"][2]["doc"], 2);
+    for window in state["document_windows"].as_array().unwrap() {
+        assert_eq!(window["kind"], "embedded");
+        assert!(window["rect"].is_array(), "each pane is drawn inside the main window");
+    }
+    ok(&mut h, &c, "ui.window", json!({"action":"focus","view":2}));
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::ArrowLeft);
+    h.run_steps(2);
+    let state = ok(&mut h, &c, "ui.state", json!({}));
+    assert_eq!(state["active"]["page"], 1);
+    assert_eq!(state["document_windows"][0]["page"], 2);
+    assert_eq!(state["document_windows"][1]["page"], 3);
+    assert_eq!(state["document_windows"][2]["page"], 6);
+    assert_eq!(ok(&mut h, &c, "ui.state", json!({"window":2}))["active"]["page"], 3);
+    let rect = state["document_windows"][0]["rect"].as_array().unwrap();
+    let (x, y) = (rect[0].as_f64().unwrap(), rect[1].as_f64().unwrap());
+    ok(&mut h, &c, "ui.drag", json!({"from":[x+220.0,y+16.0],"to":[x+180.0,y+36.0]}));
+    let moved = ok(&mut h, &c, "ui.state", json!({}));
+    let moved = moved["document_windows"][0]["rect"].as_array().unwrap();
+    assert!(moved[0].as_f64().unwrap() < x - 5.0, "the internal title bar moves the window");
+    let (right, bottom) = (moved[2].as_f64().unwrap(), moved[3].as_f64().unwrap());
+    let width = right - moved[0].as_f64().unwrap();
+    ok(&mut h, &c, "ui.drag", json!({"from":[right-2.0,bottom-2.0],"to":[right-50.0,bottom-40.0]}));
+    let resized = ok(&mut h, &c, "ui.state", json!({}));
+    let resized = resized["document_windows"][0]["rect"].as_array().unwrap();
+    assert!(resized[2].as_f64().unwrap() - resized[0].as_f64().unwrap() < width - 20.0, "the internal resize grip changes its size");
+    ok(&mut h, &c, "ui.command", json!({"id":"view.cascade_windows"}));
+    ok(&mut h, &c, "ui.command", json!({"id":"view.tile_windows"}));
+    if let Ok(dir) = std::env::var("PDFCRAFT_SHOT_DIR") {
+        h.state_mut().set_option("language", "zh-hans").unwrap();
+        ok(&mut h, &c, "ui.command", json!({"id":"view.fit_one_page"}));
+        for view in 1..=3 {
+            ok(&mut h, &c, "ui.window", json!({"action":"command","view":view,"id":"view.fit_one_page"}));
+        }
+        for _ in 0..30 {
+            h.step();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        h.render().unwrap().save(format!("{dir}/multi-document-workspace.png")).unwrap();
+    }
+    assert_eq!(ok(&mut h, &c, "ui.window", json!({"action":"close","view":2}))["closed"], true);
+    assert_eq!(h.state().session.docs().len(), 2);
+}
+
+#[test]
+fn internal_comment_inputs_publish_to_one_document_and_keep_unposted_notes_on_close() {
+    fn field<'a>(h: &'a Harness<'static, PdfCraftApp>) -> egui_kittest::Node<'a> {
+        h.query_all_by(|n| n.placeholder() == Some("Add a comment")).next().unwrap()
+    }
+    let (mut h, c) = harness();
+    h.state_mut().set_option("mode", "read").unwrap();
+    for _ in 0..2 {
+        ok(&mut h, &c, "ui.command", json!({"id":"view.new_pane"}));
+    }
+    for (view, page, text) in [(1, 1, "first pane note"), (2, 3, "second pane note")] {
+        ok(&mut h, &c, "ui.window", json!({"action":"set","view":view,"key":"page","value":page}));
+        ok(&mut h, &c, "ui.window", json!({"action":"set","view":view,"key":"panel","value":"comments"}));
+        h.run_steps(3);
+        field(&h).click();
+        h.run_steps(2);
+        field(&h).type_text(text);
+        h.run_steps(2);
+        assert!(h.query_by(|n| n.role() == egui::accesskit::Role::TextInput && n.value().as_deref() == Some(text)).is_some());
+        if view == 2 {
+            assert_eq!(ok(&mut h, &c, "ui.window", json!({"action":"close","view":2}))["closed"], false);
+            assert_eq!(ok(&mut h, &c, "ui.quit", json!({}))["quitting"], false);
+            assert_eq!(ok(&mut h, &c, "ui.window", json!({})).as_array().unwrap().len(), 2);
+        }
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        ok(&mut h, &c, "ui.window", json!({"action":"set","view":view,"key":"panel","value":"none"}));
+    }
+    let notes = &h.state().session.get(h.state().views[0].id).unwrap().info.annotations;
+    assert_eq!(notes.len(), 2);
+    assert_eq!(notes[0].contents.as_deref(), Some("first pane note"));
+    assert_eq!(notes[1].contents.as_deref(), Some("second pane note"));
+    assert_eq!(notes[0].page, 0);
+    assert_eq!(notes[1].page, 2);
+}
+
+#[test]
+fn internal_workspace_keeps_primary_editing_tools_and_fullscreen_escape() {
+    let (mut h, c) = harness();
+    ok(&mut h, &c, "ui.command", json!({"id":"view.new_pane"}));
+    h.run_steps(3);
+    assert!(h.query_all_by_label("Edit a PDF").count() > 0, "the primary editing toolbox must still render");
+    ok(&mut h, &c, "ui.command", json!({"id":"view.full_screen"}));
+    assert!(h.state().full_screen);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert!(!h.state().full_screen, "Escape belongs to the full-screen primary view even with a selected internal view");
+    assert_eq!(ok(&mut h, &c, "ui.window", json!({})).as_array().unwrap().len(), 1);
 }
 
 #[test]

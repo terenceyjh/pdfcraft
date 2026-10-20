@@ -406,6 +406,9 @@ pub fn show(app: &mut crate::PdfCraftApp, ui: &mut egui::Ui) {
         |ui, panel| match panel {
             Panel::Canvas => {
                 ui.painter().rect_filled(ui.max_rect(), 0.0, t.pasteboard);
+                if app.show_document_workspace(ui) {
+                    return;
+                }
                 match app.active {
                     None if app.combine_showing() => crate::combine_ui::page(app, ui),
                     None => crate::home::show(app, ui),

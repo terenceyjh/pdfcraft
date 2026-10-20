@@ -17,6 +17,9 @@ pub(crate) struct ViewRenderer {
 }
 
 pub(crate) struct Window {
+    id: u64,
+    embedded: bool,
+    rect: Option<egui::Rect>,
     viewport: ViewportId,
     pub app: Box<PdfCraftApp>,
     client: Option<crate::control::ControlClient>,
@@ -32,6 +35,13 @@ pub(crate) struct Windows {
     pub hidden: bool,
     restore_primary: Option<DocId>,
     next: u64,
+    focused: Option<u64>,
+    embedded: bool,
+    input_active: bool,
+    requests: Vec<(DocId, bool)>,
+    pub(crate) area: Option<egui::Rect>,
+    revision: u64,
+    cascade: bool,
 }
 
 /// A session has exactly one owner even if a view panics while it is borrowing it.
@@ -84,7 +94,158 @@ impl Drop for Lease<'_> {
     }
 }
 
+/// Background views must not consume shortcuts, text or clipboard events belonging to the
+/// selected document window. Keep pointer/wheel events available for egui's layer hit testing.
+struct KeyboardLease {
+    ctx: egui::Context,
+    removed: Vec<(usize, egui::Event)>,
+}
+
+impl KeyboardLease {
+    fn new(ctx: &egui::Context, enabled: bool) -> Self {
+        let mut removed = Vec::new();
+        if !enabled {
+            ctx.input_mut(|input| {
+                let events = std::mem::take(&mut input.events);
+                for (index, event) in events.into_iter().enumerate() {
+                    if matches!(
+                        event,
+                        egui::Event::Key { .. }
+                            | egui::Event::Text(_)
+                            | egui::Event::Paste(_)
+                            | egui::Event::Copy
+                            | egui::Event::Cut
+                            | egui::Event::Ime(_)
+                    ) {
+                        removed.push((index, event));
+                    } else {
+                        input.events.push(event);
+                    }
+                }
+            });
+        }
+        Self { ctx: ctx.clone(), removed }
+    }
+}
+
+impl Drop for KeyboardLease {
+    fn drop(&mut self) {
+        self.ctx.input_mut(|input| {
+            for (index, event) in self.removed.drain(..) {
+                input.events.insert(index.min(input.events.len()), event);
+            }
+        });
+    }
+}
+
+fn pane_id(id: u64, revision: u64) -> egui::Id {
+    egui::Id::new(("document-pane", id, revision))
+}
+
+fn pane_rect(area: egui::Rect, index: usize, count: usize, cascade: bool) -> egui::Rect {
+    let area = area.shrink(3.0);
+    if cascade {
+        let step = 28.0 * (index % 8) as f32;
+        let size = area.size() * 0.75;
+        let offset = egui::vec2(step.min((area.width() - size.x).max(0.0)), step.min((area.height() - size.y).max(0.0)));
+        return egui::Rect::from_min_size(area.min + offset, size);
+    }
+    let columns = (count.max(1) as f32).sqrt().ceil() as usize;
+    let rows = count.max(1).div_ceil(columns);
+    let size = egui::vec2(area.width() / columns as f32, area.height() / rows as f32);
+    egui::Rect::from_min_size(area.min + egui::vec2((index % columns) as f32 * size.x, (index / columns) as f32 * size.y), size).shrink(3.0)
+}
+
 impl PdfCraftApp {
+    pub(crate) fn has_document_panes(&self) -> bool {
+        self.shared_windows.entries.iter().any(|w| w.embedded)
+    }
+
+    pub(crate) fn arrange_document_panes(&mut self, cascade: bool) {
+        self.shared_windows.cascade = cascade;
+        self.shared_windows.revision = self.shared_windows.revision.wrapping_add(1);
+        if let Some(ctx) = &self.ctx {
+            ctx.request_repaint();
+        }
+    }
+
+    pub(crate) fn primary_keyboard_active(&self) -> bool {
+        self.shared_windows.focused.is_none() || self.modal_open() || self.palette_open || self.full_screen
+    }
+
+    pub(crate) fn update_workspace_focus(&mut self, ctx: &egui::Context) {
+        if self.shared_windows.focused.is_some_and(|id| !self.shared_windows.entries.iter().any(|w| w.id == id && !w.app.views.is_empty())) {
+            self.shared_windows.focused = None;
+        }
+        if let Some(window) = self.shared_windows.entries.iter().find(|w| w.embedded && w.app.modal_open()) {
+            self.shared_windows.focused = Some(window.id);
+            return;
+        }
+        if let Some(pos) = ctx.input(|i| i.pointer.press_origin().filter(|_| i.pointer.any_pressed())) {
+            let layer = ctx.layer_id_at(pos);
+            let focused = self
+                .shared_windows
+                .entries
+                .iter()
+                .find(|w| w.embedded && layer.is_some_and(|l| l.id == pane_id(w.id, self.shared_windows.revision)))
+                .map(|w| w.id);
+            if focused.is_some() || layer.is_none_or(|l| l.order < egui::Order::Foreground) {
+                self.shared_windows.focused = focused;
+            }
+        }
+    }
+
+    pub(crate) fn show_document_workspace(&mut self, ui: &mut egui::Ui) -> bool {
+        if !self.has_document_panes() {
+            self.shared_windows.area = None;
+            return false;
+        }
+        ui.horizontal_wrapped(|ui| {
+            if ui.button(tl!("Open…")).clicked() {
+                self.open_dialog();
+            }
+            ui.menu_button(tl!("Open in Internal Window"), |ui| {
+                let docs: Vec<_> = self.session.docs().iter().map(|d| (d.id, d.name.clone())).collect();
+                for (id, name) in docs {
+                    if ui.button(name).clicked() {
+                        if let Err(error) = self.open_document_pane(id) {
+                            self.notify_error(error);
+                        }
+                        ui.close();
+                    }
+                }
+            });
+            if ui.button(tl!("Tile document windows")).clicked() {
+                self.arrange_document_panes(false);
+            }
+            if ui.button(tl!("Cascade document windows")).clicked() {
+                self.arrange_document_panes(true);
+            }
+        });
+        let area = ui.available_rect_before_wrap();
+        self.shared_windows.area = Some(area);
+        ui.allocate_rect(area, egui::Sense::hover());
+        let Some(index) = self.active else { return true };
+        let Some(doc) = self.views.get(index).and_then(|v| self.session.get(v.id)) else { return true };
+        let title = format!("{} — {}", doc.name, tl!("Primary view"));
+        let count = 1 + self.shared_windows.entries.iter().filter(|w| w.embedded).count();
+        let ctx = ui.ctx().clone();
+        let _keyboard = KeyboardLease::new(&ctx, self.primary_keyboard_active());
+        egui::Window::new(title)
+            .id(pane_id(0, self.shared_windows.revision))
+            .default_rect(pane_rect(area, 0, count, self.shared_windows.cascade))
+            .constrain_to(area)
+            .max_size(area.size().max(egui::vec2(230.0, 160.0)))
+            .min_size([230.0, 160.0])
+            .collapsible(false)
+            .fade_in(false)
+            .show(&ctx, |ui| match crate::compare_ui::side_by_side(self, index) {
+                Some((old, new)) => crate::compare_ui::compare_area(self, old, new, ui),
+                None => canvas::document_area(self, index, ui),
+            });
+        true
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn reattach_shared_document(&mut self, path: &str) -> Option<usize> {
         let doc = self.session.docs().iter().find(|doc| doc.path.as_deref().is_some_and(|p| crate::same_file(p, path)))?;
@@ -114,27 +275,30 @@ impl PdfCraftApp {
         self.shared_windows.elsewhere.contains(&id) || self.shared_windows.entries.iter().any(|w| w.app.views.iter().any(|v| v.id == id))
     }
 
-    /// Open a second editable view without reading, copying or saving the PDF.
-    /// Repeats focus the existing view; the first version intentionally allows two views.
+    /// Add an independent native view over the same editable document.
     pub fn open_document_window(&mut self, id: DocId) -> Result<(), String> {
-        if cfg!(target_arch = "wasm32") {
+        self.open_document_view(id, false)
+    }
+
+    /// Add a movable document window inside the application's workspace.
+    pub fn open_document_pane(&mut self, id: DocId) -> Result<(), String> {
+        self.open_document_view(id, true)
+    }
+
+    pub(crate) fn open_document_view(&mut self, id: DocId, embedded: bool) -> Result<(), String> {
+        if !embedded && cfg!(target_arch = "wasm32") {
             return Err("Document windows are available in the desktop app".into());
         }
         if self.shared_windows.secondary {
-            self.shared_windows.restore_primary = Some(id);
-            if let Some(ctx) = &self.ctx {
-                ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Visible(true));
-                ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Focus);
-            }
+            self.shared_windows.requests.push((id, embedded));
             return Ok(());
         }
-        if let Some(window) = self.shared_windows.entries.iter().find(|w| w.app.views.iter().any(|v| v.id == id)) {
-            if let Some(ctx) = &self.ctx {
-                ctx.send_viewport_cmd_to(window.viewport, ViewportCommand::Focus);
-            }
-            return Ok(());
-        }
-        let source = self.views.iter().find(|v| v.id == id).ok_or("The document has no open view")?;
+        let source = self
+            .views
+            .iter()
+            .chain(self.shared_windows.entries.iter().flat_map(|w| &w.app.views))
+            .find(|v| v.id == id)
+            .ok_or("The document has no open view")?;
         let doc = self.session.get(id).ok_or("The document is closed")?;
         let mut view = DocView::new(id, &doc.info, self.view_defaults);
         view.zoom = source.zoom;
@@ -153,6 +317,7 @@ impl PdfCraftApp {
         app.active = Some(0);
         app.views.push(view);
         app.shared_windows.secondary = true;
+        app.shared_windows.embedded = embedded;
         app.shared_windows.elsewhere.extend(self.views.iter().map(|v| v.id));
         app.fonts_ready = true;
         app.styled = true;
@@ -162,7 +327,12 @@ impl PdfCraftApp {
         if let Some(view) = app.views.first_mut() {
             view.ui_namespace = viewport;
         }
-        self.shared_windows.entries.push(Window { viewport, app, client: None });
+        let view_id = self.shared_windows.next;
+        self.shared_windows.entries.push(Window { id: view_id, embedded, rect: None, viewport, app, client: None });
+        if embedded {
+            self.shared_windows.focused = Some(view_id);
+            self.arrange_document_panes(false);
+        }
         if let Some(ctx) = &self.ctx {
             ctx.request_repaint();
         }
@@ -207,7 +377,7 @@ impl PdfCraftApp {
     }
 
     pub(crate) fn hide_primary_for_children(&mut self, ctx: &egui::Context) -> bool {
-        if self.shared_windows.entries.is_empty() || self.shared_windows.secondary {
+        if !self.shared_windows.entries.iter().any(|w| !w.embedded) || self.shared_windows.secondary {
             return false;
         }
         // Even a rejected form edit or unfinished note must cancel the native close request.
@@ -237,8 +407,8 @@ impl PdfCraftApp {
         pending
     }
 
-    /// Application Quit first commits the other shells' typing and returns every last view to
-    /// the primary shell, where the existing save/discard/cancel sequence can protect it.
+    /// Commit typing and make every document reachable by the primary save prompt. Keep the
+    /// original windows alive until an exit decision is made, so Cancel preserves their state.
     pub(crate) fn prepare_shared_quit(&mut self) -> bool {
         let ids: Vec<_> = self.views.iter().map(|v| v.id).collect();
         if ids.into_iter().any(|id| self.shared_draft_open(id)) {
@@ -256,9 +426,20 @@ impl PdfCraftApp {
                 return false;
             }
         }
-        for window in windows {
-            for view in window.app.views {
-                if !self.views.iter().any(|v| v.id == view.id) {
+        self.shared_windows.entries = windows;
+        for window in &self.shared_windows.entries {
+            for source in &window.app.views {
+                if !self.views.iter().any(|v| v.id == source.id)
+                    && let Some(doc) = self.session.get(source.id)
+                {
+                    let mut view = DocView::new(source.id, &doc.info, self.view_defaults);
+                    view.zoom = source.zoom;
+                    view.fit = source.fit;
+                    view.layout = source.layout;
+                    view.continuous = source.continuous;
+                    view.rotation = source.rotation;
+                    view.cover = source.cover;
+                    view.go_to_page(source.current);
                     self.views.push(view);
                 }
             }
@@ -278,25 +459,63 @@ impl PdfCraftApp {
             }
         }
         let mut windows = std::mem::take(&mut self.shared_windows.entries);
-        let primary: HashSet<_> = self.views.iter().map(|v| v.id).collect();
-        for window in &mut windows {
-            window.app.shared_windows.elsewhere = primary.clone();
+        let mut pane_index = usize::from(self.active.is_some());
+        let pane_count = pane_index + windows.iter().filter(|w| w.embedded && !w.app.views.is_empty()).count();
+        let root_modal = self.modal_open() || self.palette_open;
+        let mut requests = Vec::new();
+        for index in 0..windows.len() {
+            let elsewhere = self
+                .views
+                .iter()
+                .map(|v| v.id)
+                .chain(windows.iter().enumerate().filter(|(i, _)| *i != index).flat_map(|(_, w)| w.app.views.iter().map(|v| v.id)))
+                .collect();
+            let Some(window) = windows.get_mut(index) else { continue };
+            window.app.shared_windows.elsewhere = elsewhere;
+            window.app.language = self.language.clone();
+            window.app.theme = self.theme;
+            window.app.shared_windows.input_active = !window.embedded || (self.shared_windows.focused == Some(window.id) && !root_modal);
             let title = window
                 .app
                 .views
                 .first()
                 .and_then(|v| self.session.get(v.id))
-                .map_or_else(|| "PdfCraft".to_string(), |doc| format!("{} — {} — PdfCraft", doc.name, tl!("Second window")));
+                .map_or_else(|| "PdfCraft".to_string(), |doc| format!("{} — #{}", doc.name, window.id));
             {
                 let lease = Lease::new(&mut self.session, &mut window.app).with_recovery(&mut self.recovery, &mut self.recovery_keys);
                 #[cfg(not(target_arch = "wasm32"))]
                 let lease = lease.with_watch(&mut self.watch);
-                ctx.show_viewport_immediate(
-                    window.viewport,
-                    ViewportBuilder::default().with_title(title).with_inner_size([1100.0, 850.0]).with_min_inner_size([640.0, 420.0]),
-                    |ui, _class| lease.app.shared_window_ui(ui),
-                );
+                if window.embedded {
+                    if let Some(area) = self.shared_windows.area {
+                        let mut open = true;
+                        let _keyboard = KeyboardLease::new(ctx, lease.app.shared_windows.input_active);
+                        let response = egui::Window::new(title)
+                            .id(pane_id(window.id, self.shared_windows.revision))
+                            .open(&mut open)
+                            .default_rect(pane_rect(area, pane_index, pane_count, self.shared_windows.cascade))
+                            .constrain_to(area)
+                            .max_size(area.size().max(egui::vec2(230.0, 160.0)))
+                            .min_size([230.0, 160.0])
+                            .collapsible(false)
+                            .fade_in(false)
+                            .enabled(!root_modal)
+                            .show(ctx, |ui| lease.app.shared_window_ui(ui));
+                        window.rect = response.map(|r| r.response.rect);
+                        if !open {
+                            lease.app.request_close_tab(0);
+                            self.shared_windows.focused = Some(window.id);
+                        }
+                    }
+                    pane_index += 1;
+                } else {
+                    ctx.show_viewport_immediate(
+                        window.viewport,
+                        ViewportBuilder::default().with_title(title).with_inner_size([1100.0, 850.0]).with_min_inner_size([640.0, 420.0]),
+                        |ui, _class| lease.app.shared_window_ui(ui),
+                    );
+                }
             }
+            requests.append(&mut window.app.shared_windows.requests);
             if let Some(id) = window.app.shared_windows.restore_primary.take() {
                 if !self.views.iter().any(|v| v.id == id)
                     && let Some(doc) = self.session.get(id)
@@ -321,11 +540,18 @@ impl PdfCraftApp {
         }
         windows.retain(|w| !w.app.views.is_empty());
         self.shared_windows.entries = windows;
-        if self.shared_windows.hidden && self.shared_windows.entries.is_empty() {
+        for (id, embedded) in requests {
+            if let Err(error) = self.open_document_view(id, embedded) {
+                self.notify_error(error);
+            }
+        }
+        if self.shared_windows.hidden && !self.shared_windows.entries.iter().any(|w| !w.embedded) {
             self.shared_windows.hidden = false;
             ctx.send_viewport_cmd(ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(ViewportCommand::Focus);
-            self.request_quit(ctx);
+            if self.shared_windows.entries.is_empty() {
+                self.request_quit(ctx);
+            }
         }
     }
 
@@ -346,7 +572,9 @@ impl PdfCraftApp {
         }
         self.process_file_requests();
         let deferred = std::mem::take(&mut self.deferred_commands);
-        self.shortcuts(&ctx);
+        if !self.shared_windows.embedded || self.shared_windows.input_active {
+            self.shortcuts(&ctx);
+        }
         if self.process_pending_edits() {
             for (command, doc) in deferred {
                 if self.active_ids().map(|(_, id)| id) == doc {
@@ -354,7 +582,7 @@ impl PdfCraftApp {
                 }
             }
         }
-        if ctx.input(|i| i.viewport().close_requested()) {
+        if !self.shared_windows.embedded && ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
             self.request_close_tab(0);
         }
@@ -364,7 +592,7 @@ impl PdfCraftApp {
         for view in &mut self.views {
             view.begin_render_frame();
         }
-        let viewport = ctx.viewport_id();
+        let viewport = self.views[0].ui_namespace;
         egui::Panel::top(egui::Id::new(("shared-toolbar", viewport))).show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 for (label, command) in
@@ -375,10 +603,16 @@ impl PdfCraftApp {
                         self.execute(command);
                     }
                 }
-                if ui.button(tl!("Show primary window")).clicked()
+                if ui.button(tl!("Open in Internal Window")).clicked()
                     && let Some((_, id)) = self.active_ids()
                 {
-                    let _ = self.open_document_window(id);
+                    let _ = self.open_document_pane(id);
+                }
+                if !self.shared_windows.embedded
+                    && ui.button(tl!("Show primary window")).clicked()
+                    && let Some((_, id)) = self.active_ids()
+                {
+                    self.shared_windows.restore_primary = Some(id);
                 }
                 ui.separator();
                 for (label, panel) in
@@ -389,7 +623,7 @@ impl PdfCraftApp {
                     }
                 }
             });
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 let view = &mut self.views[0]; // The nonempty view was checked above; this shell holds one view.
                 if ui.button("◀").clicked() {
                     view.step_page(false);
@@ -412,6 +646,9 @@ impl PdfCraftApp {
                 if ui.button(tl!("Fit to width")).clicked() {
                     view.fit = canvas::Fit::Width;
                 }
+                if ui.button(tl!("Fit one full page")).clicked() {
+                    view.fit = canvas::Fit::Page;
+                }
                 if self.session.get(view.id).is_some_and(|d| d.dirty) {
                     ui.label(tl!("Unsaved changes"));
                 }
@@ -429,8 +666,10 @@ impl PdfCraftApp {
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.pasteboard)).show(ui, |ui| canvas::document_area(self, 0, ui));
         }
         self.process_pending_edits();
-        dialogs::show(self, &ctx);
-        widgets::toast(self, &ctx);
+        if !self.shared_windows.embedded || self.shared_windows.input_active {
+            dialogs::show(self, &ctx);
+            widgets::toast(self, &ctx);
+        }
         self.sync_shared_document_views();
         self.finish_render_frame(&ctx);
         for view in &self.views {
@@ -449,6 +688,9 @@ impl PdfCraftApp {
                     let view = window.app.views.first()?;
                     let doc = self.session.get(view.id)?;
                     Some(serde_json::json!({
+                        "view": window.id, "kind": if window.embedded { "embedded" } else { "native" },
+                        "focused": self.shared_windows.focused == Some(window.id),
+                        "rect": window.rect.map(|r| [r.min.x, r.min.y, r.max.x, r.max.y]),
                         "doc": view.id.0, "name": doc.name, "path": doc.path,
                         "page": view.current + 1, "pages": doc.info.pages.len(),
                         "zoom_percent": (view.zoom * 100.0).round(), "dirty": doc.dirty,
@@ -462,7 +704,7 @@ impl PdfCraftApp {
     /// Route through the already opt-in parent connection; no additional listener or token.
     pub(crate) fn route_shared_window(
         &mut self,
-        doc: u64,
+        view_id: u64,
         method: &str,
         params: serde_json::Value,
     ) -> Result<std::sync::mpsc::Receiver<crate::control::Reply>, String> {
@@ -472,12 +714,41 @@ impl PdfCraftApp {
                     .into(),
             );
         }
-        let window = self
-            .shared_windows
-            .entries
-            .iter_mut()
-            .find(|w| w.app.views.iter().any(|v| v.id == DocId(doc)))
-            .ok_or("The document has no second window")?;
+        let index = self.shared_windows.entries.iter().position(|w| w.id == view_id).ok_or("No document window has that view id")?;
+        let elsewhere = self
+            .views
+            .iter()
+            .map(|v| v.id)
+            .chain(self.shared_windows.entries.iter().enumerate().filter(|(i, _)| *i != index).flat_map(|(_, w)| w.app.views.iter().map(|v| v.id)))
+            .collect();
+        let window = self.shared_windows.entries.get_mut(index).ok_or("The window is closed")?;
+        window.app.shared_windows.elsewhere = elsewhere;
+        if window.embedded {
+            use crate::control::Host;
+            let (tx, rx) = std::sync::mpsc::channel();
+            let lease = Lease::new(&mut self.session, &mut window.app).with_recovery(&mut self.recovery, &mut self.recovery_keys);
+            #[cfg(not(target_arch = "wasm32"))]
+            let lease = lease.with_watch(&mut self.watch);
+            let reply = match method {
+                "ui.state" => Ok(lease.app.state()),
+                "ui.set" => {
+                    self.shared_windows.focused = Some(view_id);
+                    let key = params.get("key").and_then(serde_json::Value::as_str).ok_or("set needs key")?;
+                    let value = params.get("value").ok_or("set needs value")?;
+                    lease.app.set(key, &value.as_str().map(str::to_owned).unwrap_or_else(|| value.to_string()))
+                }
+                "ui.command" => {
+                    self.shared_windows.focused = Some(view_id);
+                    lease.app.command(params.get("id").and_then(serde_json::Value::as_str).ok_or("command needs id")?)
+                }
+                _ => Err(
+                    "Internal windows share the main widget tree: use untargeted ui.inspect/input/screenshot, or window-targeted state/set/command"
+                        .into(),
+                ),
+            };
+            let _ = tx.send(reply);
+            return Ok(rx);
+        }
         if window.client.is_none() {
             let ctx = self.ctx.as_ref().ok_or("The interface has not drawn yet")?;
             let (control, client) = crate::control::attach_for(ctx, window.viewport);
@@ -487,12 +758,20 @@ impl PdfCraftApp {
         window.client.as_ref().map(|client| client.send(method, params)).ok_or_else(|| "The window control is unavailable".into())
     }
 
-    /// Opt-in UI control surface. `doc` chooses a document's second view.
+    /// Opt-in UI control surface. A view id disambiguates multiple views of the same PDF.
     pub(crate) fn shared_window_control(&mut self, params: &serde_json::Value) -> crate::control::Reply {
         use crate::control::Host;
         let action = params.get("action").and_then(serde_json::Value::as_str).unwrap_or("state");
         if action == "state" {
             return Ok(self.shared_windows_state());
+        }
+        if action == "show-primary" {
+            self.shared_windows.hidden = false;
+            if let Some(ctx) = &self.ctx {
+                ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Visible(true));
+                ctx.send_viewport_cmd_to(ViewportId::ROOT, ViewportCommand::Focus);
+            }
+            return Ok(serde_json::json!({"primary_hidden":false}));
         }
         if action == "hide-primary" {
             let ctx = self.ctx.clone().ok_or("The interface has not drawn yet")?;
@@ -505,17 +784,44 @@ impl PdfCraftApp {
             .get("doc")
             .and_then(serde_json::Value::as_u64)
             .map(DocId)
+            .or_else(|| {
+                params
+                    .get("view")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|target| self.shared_windows.entries.iter().find(|w| w.id == target))
+                    .and_then(|w| w.app.views.first())
+                    .map(|v| v.id)
+            })
             .or_else(|| self.active_ids().map(|(_, id)| id))
-            .or_else(|| self.shared_windows.entries.first().and_then(|w| w.app.views.first()).map(|v| v.id))
+            .or_else(|| self.shared_windows.entries.iter().flat_map(|w| &w.app.views).next().map(|v| v.id))
             .ok_or("No document is open")?;
         if action == "open" {
-            self.open_document_window(id)?;
+            let embedded = match params.get("kind").and_then(serde_json::Value::as_str).unwrap_or("native") {
+                "embedded" => true,
+                "native" => false,
+                _ => return Err("kind must be embedded or native".into()),
+            };
+            self.open_document_view(id, embedded)?;
             return Ok(self.shared_windows_state());
         }
-        let index =
-            self.shared_windows.entries.iter().position(|w| w.app.views.iter().any(|v| v.id == id)).ok_or("The document has no second window")?;
+        let target = params.get("view").and_then(serde_json::Value::as_u64);
+        let index = self
+            .shared_windows
+            .entries
+            .iter()
+            .position(|w| target.map_or_else(|| w.app.views.iter().any(|v| v.id == id), |view| w.id == view))
+            .ok_or("No document window matches the requested view")?;
+        let elsewhere = self
+            .views
+            .iter()
+            .map(|v| v.id)
+            .chain(self.shared_windows.entries.iter().enumerate().filter(|(i, _)| *i != index).flat_map(|(_, w)| w.app.views.iter().map(|v| v.id)))
+            .collect();
         let window = self.shared_windows.entries.get_mut(index).ok_or("The window is closed")?;
-        window.app.shared_windows.elsewhere = self.views.iter().map(|v| v.id).collect();
+        if window.embedded {
+            self.shared_windows.focused = Some(window.id);
+        }
+        window.app.shared_windows.elsewhere = elsewhere;
         let lease = Lease::new(&mut self.session, &mut window.app).with_recovery(&mut self.recovery, &mut self.recovery_keys);
         #[cfg(not(target_arch = "wasm32"))]
         let lease = lease.with_watch(&mut self.watch);
@@ -531,7 +837,17 @@ impl PdfCraftApp {
                 lease.app.request_close_tab(0);
                 Ok(serde_json::json!({"closed": lease.app.views.is_empty(), "close_prompt": lease.app.close_request.is_some()}))
             }
-            _ => Err("ui.window action must be state, open, set, command, close or hide-primary".into()),
+            "focus" => {
+                if let Some(ctx) = &lease.app.ctx {
+                    if window.embedded {
+                        ctx.move_to_top(egui::LayerId::new(egui::Order::Middle, pane_id(window.id, self.shared_windows.revision)));
+                    } else {
+                        ctx.send_viewport_cmd_to(window.viewport, ViewportCommand::Focus);
+                    }
+                }
+                Ok(serde_json::json!({"view":window.id}))
+            }
+            _ => Err("ui.window action must be state, open, focus, set, command, close, show-primary or hide-primary".into()),
         };
         if let Some(ctx) = &self.ctx {
             ctx.request_repaint();
@@ -583,7 +899,7 @@ mod tests {
         let (mut app, id) = app();
         app.open_document_window(id).unwrap();
         app.open_document_window(id).unwrap();
-        assert_eq!(app.shared_windows.entries.len(), 1, "repeated requests must reuse the second window");
+        assert_eq!(app.shared_windows.entries.len(), 2, "each request creates an independent reading view");
         assert_eq!(app.session.docs().len(), 1, "one editable PDF, not a snapshot copy");
         assert!(app.apply_edit(note(0, "chapter one")));
         let window = &mut app.shared_windows.entries[0];
@@ -774,17 +1090,85 @@ mod tests {
     }
 
     #[test]
-    fn quit_transfers_a_document_whose_primary_tab_was_closed() {
+    fn quit_includes_a_document_whose_primary_tab_was_closed_and_cancel_keeps_its_windows() {
         let (mut app, id) = app();
         app.open_document_window(id).unwrap();
         assert!(app.apply_edit(note(0, "unsaved")));
         app.request_close_tab(0);
         assert!(app.prepare_shared_quit());
-        assert!(app.shared_windows.entries.is_empty());
+        assert_eq!(app.shared_windows.entries.len(), 1);
         assert_eq!(app.views.len(), 1);
         assert_eq!(app.first_dirty(), Some(0));
         assert!(!app.request_quit(&egui::Context::default()));
         assert_eq!(app.close_request, Some(CloseRequest::Quit));
+        app.resolve_close(&egui::Context::default(), None);
+        assert_eq!(app.shared_windows.entries.len(), 1);
+        assert!(app.session.get(id).unwrap().dirty);
+    }
+
+    #[test]
+    fn cancelled_quit_preserves_all_internal_reading_positions() {
+        let (mut app, id) = app();
+        for page in [1, 2] {
+            app.open_document_pane(id).unwrap();
+            app.shared_windows.entries.last_mut().unwrap().app.views[0].go_to_page(page);
+        }
+        assert!(app.apply_edit(note(0, "save prompt")));
+        let ctx = egui::Context::default();
+        assert!(!app.request_quit(&ctx));
+        assert_eq!(app.close_request, Some(CloseRequest::Quit));
+        app.resolve_close(&ctx, None);
+        assert_eq!(app.shared_windows.entries.len(), 2);
+        assert_eq!(app.shared_windows_state()[0]["page"], 2);
+        assert_eq!(app.shared_windows_state()[1]["page"], 3);
+        assert!(app.session.get(id).unwrap().dirty);
+    }
+
+    #[test]
+    fn native_close_protects_an_internal_only_document_and_its_unposted_note() {
+        let (mut app, id) = app();
+        app.open_document_pane(id).unwrap();
+        app.request_close_tab(0);
+        assert!(app.views.is_empty());
+        app.shared_windows.entries[0].app.views[0].comments.add_box = "internal draft".into();
+        let ctx = egui::Context::default();
+        let close = || {
+            let mut input = egui::RawInput::default();
+            input.viewports.get_mut(&ViewportId::ROOT).unwrap().events.push(egui::ViewportEvent::Close);
+            input
+        };
+        let output = ctx.run_ui(close(), |_| app.guard_quit(&ctx));
+        assert!(output.viewport_output[&ViewportId::ROOT].commands.iter().any(|c| matches!(c, ViewportCommand::CancelClose)));
+        output.drop_without_applying_deltas();
+        assert!(!app.allow_quit);
+        assert_eq!(app.shared_windows.entries[0].app.views[0].comments.add_box, "internal draft");
+        app.shared_windows.entries[0].app.views[0].comments.add_box.clear();
+        let lease = Lease::new(&mut app.session, &mut app.shared_windows.entries[0].app);
+        assert!(lease.app.apply_edit(note(0, "dirty internal document")));
+        drop(lease);
+        let output = ctx.run_ui(close(), |_| app.guard_quit(&ctx));
+        output.drop_without_applying_deltas();
+        assert_eq!(app.close_request, Some(CloseRequest::Quit));
+        app.resolve_close(&ctx, None);
+        assert_eq!(app.shared_windows.entries.len(), 1);
+        assert!(app.session.get(id).unwrap().dirty);
+    }
+
+    #[test]
+    fn consecutive_targeted_close_commands_do_not_use_stale_sibling_state() {
+        let (mut app, id) = app();
+        app.open_document_pane(id).unwrap();
+        app.open_document_pane(id).unwrap();
+        assert!(app.apply_edit(note(0, "do not discard")));
+        app.request_close_tab(0);
+        for view in [1, 2] {
+            let reply = app.route_shared_window(view, "ui.command", json!({"id":"file.close"})).unwrap();
+            assert!(reply.recv().unwrap().is_ok());
+        }
+        assert!(app.shared_windows.entries[0].app.views.is_empty());
+        assert_eq!(app.shared_windows.entries[1].app.views.len(), 1);
+        assert_eq!(app.shared_windows.entries[1].app.close_request, Some(CloseRequest::Tab(id)));
+        assert!(app.session.get(id).unwrap().dirty);
     }
 
     #[test]
@@ -827,5 +1211,77 @@ mod tests {
         let after = pixels(&lease.app.shared_windows.renderers.get(&id).unwrap().pool);
         assert!(!before.is_empty());
         assert!(before != after, "the second window must adopt the new rendering configuration, even when PDF bytes stay the same");
+    }
+
+    #[test]
+    fn new_installation_defaults_to_chinese_and_remembers_explicit_language_choices() {
+        let app = PdfCraftApp::new();
+        assert_eq!(app.language, "zh-hans");
+        let mut restored = PdfCraftApp::new();
+        restored.restore(&app.persist());
+        assert_eq!(restored.language, "zh-hans");
+        restored.set_option("language", "en").unwrap();
+        let mut again = PdfCraftApp::new();
+        again.restore(&restored.persist());
+        assert_eq!(again.language, "en");
+    }
+
+    #[test]
+    fn three_sibling_views_share_edits_and_protect_the_last_view_after_primary_closes() {
+        let (mut app, id) = app();
+        for _ in 0..3 {
+            app.open_document_pane(id).unwrap();
+        }
+        for index in 0..3 {
+            let lease = Lease::new(&mut app.session, &mut app.shared_windows.entries[index].app);
+            lease.app.views[0].go_to_page(index);
+            assert!(lease.app.apply_edit(note(index, &format!("note {index}"))));
+        }
+        assert_eq!(app.session.docs().len(), 1);
+        assert_eq!(app.session.get(id).unwrap().info.annotations.len(), 3);
+        assert_eq!(app.shared_windows_state().as_array().unwrap().iter().map(|v| v["page"].as_u64().unwrap()).collect::<Vec<_>>(), [1, 2, 3]);
+        app.request_close_tab(0);
+        for view in [1, 2] {
+            let close = app.shared_window_control(&json!({"action":"close","view":view})).unwrap();
+            assert_eq!(close["closed"], true);
+            assert!(app.session.get(id).is_some());
+        }
+        let last = app.shared_window_control(&json!({"action":"close","view":3})).unwrap();
+        assert_eq!(last["closed"], false);
+        assert_eq!(last["close_prompt"], true);
+        assert_eq!(app.session.get(id).unwrap().info.annotations.len(), 3);
+    }
+
+    #[test]
+    fn mixed_document_panes_route_by_view_id_and_keep_drafts_independent() {
+        let (mut app, first) = app();
+        app.open_bytes("other.pdf", None, app.session.get(first).unwrap().bytes.as_ref().clone()).unwrap();
+        let second = app.views[1].id;
+        app.open_document_pane(first).unwrap();
+        app.open_document_pane(first).unwrap();
+        app.open_document_pane(second).unwrap();
+        app.shared_windows.entries[0].app.views[0].comments.add_box = "unposted".into();
+        assert_eq!(app.shared_window_control(&json!({"action":"close","view":1})).unwrap()["closed"], false);
+        assert_eq!(app.shared_window_control(&json!({"action":"close","view":2})).unwrap()["closed"], true);
+        let lease = Lease::new(&mut app.session, &mut app.shared_windows.entries[2].app);
+        assert!(lease.app.apply_edit(note(0, "second document only")));
+        drop(lease);
+        assert_eq!(app.session.get(first).unwrap().info.annotations.len(), 0);
+        assert_eq!(app.session.get(second).unwrap().info.annotations.len(), 1);
+        assert!(!app.prepare_shared_quit());
+        assert_eq!(app.shared_windows.entries[0].app.views[0].comments.add_box, "unposted");
+    }
+
+    #[test]
+    fn tiled_panes_are_disjoint_and_within_the_workspace() {
+        let area = egui::Rect::from_min_max(egui::pos2(20.0, 90.0), egui::pos2(1420.0, 950.0));
+        for count in 2..=16 {
+            let rects: Vec<_> = (0..count).map(|index| pane_rect(area, index, count, false)).collect();
+            for (i, rect) in rects.iter().enumerate() {
+                assert!(area.contains_rect(*rect));
+                assert!(rect.is_positive());
+                assert!(!rects.iter().skip(i + 1).any(|r| rect.intersects(*r)));
+            }
+        }
     }
 }

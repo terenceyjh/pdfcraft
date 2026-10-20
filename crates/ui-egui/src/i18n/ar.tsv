@@ -2717,3 +2717,7 @@ certificate	Version	الإصدار
 	Edits are shared; reading positions are independent	التعديلات مشتركة؛ مواضع القراءة مستقلة
 	Post or cancel the unfinished comment before closing this view	انشر التعليق غير المكتمل أو ألغِه قبل إغلاق هذا العرض
 	Unsaved changes	تغييرات غير محفوظة
+	Open in Internal Window	فتح في نافذة داخلية
+	Tile document windows	تجانب نوافذ المستندات
+	Cascade document windows	تتالي نوافذ المستندات
+	Primary view	العرض الرئيسي

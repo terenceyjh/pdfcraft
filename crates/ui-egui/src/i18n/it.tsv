@@ -2652,3 +2652,7 @@ certificate	SHA-256 digest	Impronta SHA-256
 	Edits are shared; reading positions are independent	Le modifiche sono condivise; le posizioni di lettura sono indipendenti
 	Post or cancel the unfinished comment before closing this view	Pubblica o annulla il commento incompleto prima di chiudere questa vista
 	Unsaved changes	Modifiche non salvate
+	Open in Internal Window	Apri in una finestra interna
+	Tile document windows	Affianca le finestre dei documenti
+	Cascade document windows	Sovrapponi le finestre dei documenti
+	Primary view	Vista principale

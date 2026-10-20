@@ -120,7 +120,7 @@ PdfCraft opens files from strangers, and people trust it with their work. A malf
 
 Follow `CLAUDE.md`. It covers quality gates, layering, commit rules and how to run and look at the app.
 
-## Local development log — shared PDF windows (2026-10-21)
+## Local development log — shared PDF windows, first stage (2026-10-21)
 
 - Completed the user-requested roadmap and implementation; see `docs/shared-document-windows.md`
   for design, steps, usage, verification and limits. Work is on `feat/shared-document-windows`.
@@ -158,6 +158,44 @@ Follow `CLAUDE.md`. It covers quality gates, layering, commit rules and how to r
 - QA artifacts are ignored in `target/qa`. Native QA uses portable mode in `target/debug`, keeping
   settings and recovery under the project. Limit: two views per PDF, desktop only; independent
   processes and restart restoration are not synchronized. Keep all contributor rules above.
+
+## Local development log — Chinese multi-document workspace (2026-10-21)
+
+- Extended baseline `751b118f`; the plan was committed as `686d7be4`, Chinese defaults
+  as `4fbbe4b2`. The current
+  usage, architecture, validation and Git rollback instructions are in
+  `docs/multi-document-workspace.md`. Continue on `feat/shared-document-windows`.
+- New preferences default to `zh-hans`; explicit saved language choices are retained.
+  Added four original labels to all 22 catalogs and updated their attribution hashes.
+  Existing complete-catalog gates cover every command and UI literal. Font-picker and
+  watermark hints use localized labels; the community button has a translated label.
+- A unique view id is separate from DocId. Repeated native opens create additional
+  views; `view.new_pane` creates movable/resizable internal windows in one application
+  window, with a document picker and tile/cascade commands. Same/different PDFs mix.
+  Every view keeps its own renderer, reading state, tools and drafts over one Session.
+- Pointer/layer focus selects the internal view; a scoped keyboard-event lease prevents
+  inactive views consuming typing, clipboard, IME or shortcuts. Floating editors retain
+  their owning view's focus. Root and child renderers keep independent demand queues.
+- Sibling close protection includes every other live view, even if its primary tab was
+  closed. Quit keeps windows until an explicit save/discard decision; cancellation keeps
+  reading positions. Native root close also checks documents/drafts that exist only in
+  internal views. Explicit discard clears the corresponding recovery state normally.
+- The existing opt-in authenticated channel targets `view` ids. Embedded windows share
+  main input/inspection/capture; targeted state/set/command are available. Native input
+  routing remains per viewport. No new listeners, files outside the project or assets.
+- Windows native QA used four internal reading regions, two PDFs, separate chapter
+  positions, Chinese notes from both views, shared save/undo/redo, three extra native
+  windows and view-id control routing. Independent CLI reopen confirms 4 annotations
+  in the edited PDF and 2 in the other. Main screenshots capture internal windows.
+- Final validation counts and commit checkpoints are recorded in the linked roadmap.
+  UI unit tests: 485 passing, 1 original ignored; relevant UI integrations: 153 passing.
+  Native Clippy --all-targets -D warnings, formatting, diff, layering, assets, parity,
+  wasm check (existing dead-code warnings) and the desktop build passed.
+  Primary editing panels and full-screen Escape have focused workspace regressions;
+  consecutive targeted closes recompute sibling state to preserve the final dirty view.
+  QA scripts/PDFs/screenshots/logs stay ignored in `target/qa`; Rust/cache/toolchain and
+  portable application data remain under this project. Layout is not restored across
+  restart; independently launched processes do not share a Session.
 
 ## Contributor credits (About window)
 
