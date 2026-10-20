@@ -61,7 +61,7 @@ pub(crate) fn installed_font_files(ctx: &egui::Context) -> Option<Vec<pdfcraft_e
 fn files_picker(purpose: FilePurpose) -> rfd::AsyncFileDialog {
     let dialog = rfd::AsyncFileDialog::new();
     if matches!(purpose, FilePurpose::TextFont { .. }) {
-        return dialog.add_filter("TrueType / OpenType font", &["ttf", "otf"]);
+        return dialog.add_filter(format!("TrueType / OpenType {}", tl!("Fonts")), &["ttf", "otf"]);
     }
     if purpose == FilePurpose::RedactWords {
         return dialog.add_filter(tl!("Text"), &["txt"]);

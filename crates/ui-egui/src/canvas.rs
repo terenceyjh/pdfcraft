@@ -6227,6 +6227,7 @@ trailer << /Root 1 0 R >>
 
         let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 900.0)).build_eframe(|_cc| {
             let mut app = PdfCraftApp::new();
+            app.set_option("language", "en").unwrap();
             let bytes = app.session.create_blank(300.0, 400.0, 100).unwrap();
             app.open_bytes("organize-gaps.pdf", None, bytes.as_ref().clone()).unwrap();
             app.views[0].organize = true;

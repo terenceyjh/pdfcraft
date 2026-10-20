@@ -1122,7 +1122,7 @@ mod tests {
     #[test]
     fn language_persists_and_invalid_input_keeps_current_language() {
         let mut app = crate::PdfCraftApp::default();
-        assert_eq!(app.language, AUTO);
+        assert_eq!(app.language, "zh-hans");
         app.set_option("language", "JA").unwrap();
         assert_eq!(app.language, "ja");
         assert!(app.set_option("language", "xx").is_err());
@@ -1134,10 +1134,10 @@ mod tests {
         assert_eq!(restored.language, "ja");
         app.set_option("language", AUTO).unwrap();
         assert_eq!(app.language, AUTO);
-        // Settings written before the system-locale default (no key) follow the system.
+        // Older settings without a language use this build's Chinese default.
         let mut legacy = crate::PdfCraftApp::default();
         legacy.restore("{}");
-        assert_eq!(legacy.language, AUTO);
+        assert_eq!(legacy.language, "zh-hans");
     }
 
     #[test]

@@ -237,9 +237,7 @@ pub(crate) fn body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens, kind: M
                 ui.vertical(|ui| {
                     ui.add_enabled_ui(!d.use_file, |ui| {
                         ui.label(tl!("Text"));
-                        ui.add(
-                            crate::widgets::block(&mut d.wm.text).desired_rows(2).desired_width(320.0).hint_text("CONFIDENTIAL").id_salt("wm-text"),
-                        );
+                        ui.add(crate::widgets::block(&mut d.wm.text).desired_rows(2).desired_width(320.0).hint_text(tl!("Text")).id_salt("wm-text"));
                     });
                     ui.horizontal(|ui| {
                         ui.add_enabled_ui(!d.use_file, |ui| ui.add(widgets::checkbox(&mut d.fit, tl!("Fit to page"))));
