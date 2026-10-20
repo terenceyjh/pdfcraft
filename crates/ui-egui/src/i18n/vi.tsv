@@ -2687,3 +2687,9 @@ key	Space	Space
 # Historical snapshot notice bar (View signed version / View revision).
 	You are viewing the signed version of “{from}” (revision {rev}). It is a snapshot: changes here won't affect the original.	Bạn đang xem phiên bản đã ký của “{from}” (bản sửa đổi {rev}). Đây là ảnh nhanh: các thay đổi ở đây không được áp dụng đến bản gốc.
 	You are viewing revision {rev} of “{from}”. It is a snapshot: changes here won't affect the original.	Bạn đang xem bản sửa đổi {rev} của “{from}”. Đây là ảnh nhanh: các thay đổi ở đây không được áp dụng đến bản gốc.
+	Open in New Window	Mở trong cửa sổ mới
+	Second window	Cửa sổ thứ hai
+	Show primary window	Hiện cửa sổ chính
+	Edits are shared; reading positions are independent	Các chỉnh sửa được chia sẻ; vị trí đọc độc lập
+	Post or cancel the unfinished comment before closing this view	Đăng hoặc hủy bình luận chưa hoàn tất trước khi đóng chế độ xem này
+	Unsaved changes	Thay đổi chưa lưu

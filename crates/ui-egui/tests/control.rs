@@ -87,6 +87,43 @@ fn ok(h: &mut Harness<'static, PdfCraftApp>, c: &ControlClient, method: &str, pa
 }
 
 #[test]
+fn shared_document_window_control_preserves_independent_views_and_last_close_guard() {
+    let (mut h, c) = harness();
+    ok(&mut h, &c, "ui.command", json!({"id":"view.new_window"}));
+    h.run_steps(3);
+    ok(&mut h, &c, "ui.window", json!({"action":"set","key":"page","value":4}));
+    let state = ok(&mut h, &c, "ui.state", json!({}));
+    assert_eq!(state["active"]["page"], 1);
+    assert_eq!(state["document_windows"][0]["page"], 4);
+    assert!(call(&mut h, &c, "ui.screenshot", json!({"window":1})).unwrap_err().contains("secondary screenshots"));
+    if let Ok(dir) = std::env::var("PDFCRAFT_SHOT_DIR") {
+        // Native rendering finishes on workers; allow the tiny synthetic pages to arrive
+        // before capturing the optional visual-QA artifact.
+        for _ in 0..30 {
+            h.step();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        h.render().unwrap().save(format!("{dir}/shared-document-windows.png")).unwrap();
+    }
+    ok(&mut h, &c, "ui.window", json!({"action":"hide-primary"}));
+    assert_eq!(ok(&mut h, &c, "ui.state", json!({}))["primary_hidden"], true);
+    ok(&mut h, &c, "ui.window", json!({"action":"command","id":"view.new_window"}));
+    h.run_steps(2);
+    assert_eq!(ok(&mut h, &c, "ui.state", json!({}))["primary_hidden"], false);
+    ok(&mut h, &c, "ui.command", json!({"id":"view.new_window"}));
+    assert_eq!(ok(&mut h, &c, "ui.window", json!({})).as_array().unwrap().len(), 1);
+    ok(&mut h, &c, "ui.command", json!({"id":"page.insert_blank"}));
+    ok(&mut h, &c, "ui.command", json!({"id":"file.close"}));
+    let state = ok(&mut h, &c, "ui.state", json!({}));
+    assert!(state["active"].is_null());
+    assert_eq!(state["document_windows"][0]["pages"], 6);
+    assert_eq!(state["document_windows"][0]["dirty"], true);
+    let close = ok(&mut h, &c, "ui.window", json!({"action":"close"}));
+    assert_eq!(close["closed"], false);
+    assert_eq!(close["close_prompt"], true);
+}
+
+#[test]
 fn control_resize_reports_observed_dimensions_and_rejects_invalid_sizes() {
     let (mut h, c) = harness();
     for params in [

@@ -9,6 +9,18 @@ statuses = ["planned", "partial", "shipped", "na"]
 tiers = ["P0", "P1", "P2", "P3", "N/A"]
 areas = { A = "core", B = "view", C = "edit", D = "organize", E = "comment", F = "form", G = "protect", H = "sign", I = "ocr", J = "create", K = "optimize", L = "print", M = "a11y", N = "misc" }
 
+[[feature]]
+id = "view.shared-document-windows"
+title = "Independent windows sharing one live PDF"
+area = "B"
+tier = "P1"
+milestone = "M3"
+status = "shipped"
+commands = ["view.new_window"]
+tools = []
+evidence = ["crates/ui-egui/src/shared_windows.rs::two_views_share_live_edits_history_and_independent_navigation", "crates/ui-egui/src/shared_windows.rs::second_window_save_as_keeps_both_notes_and_one_save_target", "crates/ui-egui/tests/control.rs::shared_document_window_control_preserves_independent_views_and_last_close_guard"]
+notes = "Desktop second reading/annotation window over the same DocId and Session, independent view/draft/tool/widget/render state, shared edits/save/undo and last-view close protection. Opt-in ui.window and window-targeted control requests use the existing authenticated connection. Windows native and headless UI verification passed; see docs/shared-document-windows.md. Secondary immediate/WGPU screenshots report unsupported. Limited to two views per document; standalone --new-window processes and restart restoration are separate."
+
 # ==================================================================================================
 # A. Core document model and fidelity
 # ==================================================================================================

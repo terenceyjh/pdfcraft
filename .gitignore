@@ -1,6 +1,7 @@
 *~
 plan/
 /target
+/.tools
 /dist
 /corpus
 /log

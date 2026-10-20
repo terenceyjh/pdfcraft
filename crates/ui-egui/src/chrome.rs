@@ -154,6 +154,10 @@ pub fn tab_strip(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                                 let id = app.views[i].id;
                                 let reveal = cfg!(not(target_arch = "wasm32")) && doc.path.is_some();
                                 response.context_menu(|ui| {
+                                    if cfg!(not(target_arch = "wasm32")) && ui.button(tl!("Open in New Window")).clicked() {
+                                        action = Some(crate::tab_context::Action::NewWindow(id));
+                                        ui.close();
+                                    }
                                     if ui.button(tl!("Close Tab")).clicked() {
                                         action = Some(crate::tab_context::Action::Close(id));
                                         ui.close();

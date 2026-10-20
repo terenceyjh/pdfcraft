@@ -39,6 +39,9 @@
 //! - `ui.open {path}`: accept a file open; native opens report `pending: true` until they
 //!   complete and are listed in `ui.state.pending_opens`.
 //! - `ui.screenshot {region?}`: PNG of the window (base64), optionally cropped to a rect.
+//! - `ui.window {action: state|open|set|command|close|hide-primary, doc?, ...}`: independent
+//!   second view. Input, inspect and state accept `window: <doc id>` through the same connection.
+//!   Secondary screenshots are unsupported by the immediate renderer and return a clear error.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -114,7 +117,10 @@ struct Shared {
 
 /// The egui plugin half of the control channel.
 pub struct ControlPlugin {
-    shared: Arc<Mutex<Shared>>,
+    views: HashMap<egui::ViewportId, std::sync::Weak<Mutex<Shared>>>,
+    // egui pops its viewport stack before output_hook, so ctx.viewport_id() is already
+    // the parent there. Pair each output with the viewport from its raw input instead.
+    passes: Vec<egui::ViewportId>,
 }
 
 impl egui::Plugin for ControlPlugin {
@@ -123,7 +129,10 @@ impl egui::Plugin for ControlPlugin {
     }
 
     fn input_hook(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
-        let Ok(mut s) = self.shared.lock() else { return };
+        self.passes.push(input.viewport_id);
+        self.views.retain(|_, shared| shared.strong_count() > 0);
+        let Some(shared) = self.views.get(&input.viewport_id).and_then(std::sync::Weak::upgrade) else { return };
+        let Ok(mut s) = shared.lock() else { return };
         if let Some(batch) = s.inject.pop_front() {
             input.events.extend(batch);
         }
@@ -133,7 +142,9 @@ impl egui::Plugin for ControlPlugin {
     }
 
     fn output_hook(&mut self, _ctx: &egui::Context, output: &mut egui::FullOutput) {
-        let Ok(mut s) = self.shared.lock() else { return };
+        let viewport = self.passes.pop().unwrap_or(egui::ViewportId::ROOT);
+        let Some(shared) = self.views.get(&viewport).and_then(std::sync::Weak::upgrade) else { return };
+        let Ok(mut s) = shared.lock() else { return };
         s.passes += 1;
         let Some(update) = &output.platform_output.accesskit_update else { return };
         s.nodes = update.nodes.iter().cloned().collect();
@@ -143,6 +154,11 @@ impl egui::Plugin for ControlPlugin {
 }
 
 enum Pending {
+    Forward {
+        rx: Receiver<Reply>,
+        reply: Sender<Reply>,
+        since: f64,
+    },
     /// Answer after `frames` more frames (the injected input has been handled by then).
     Frames {
         /// Answer once this many egui passes have run (the injected input has been handled).
@@ -170,8 +186,15 @@ pub struct Control {
 
 /// Install the control channel on `ctx`: returns the app half and a client.
 pub fn attach(ctx: &egui::Context) -> (Control, ControlClient) {
+    attach_for(ctx, ctx.viewport_id())
+}
+
+pub(crate) fn attach_for(ctx: &egui::Context, viewport: egui::ViewportId) -> (Control, ControlClient) {
     let shared = Arc::new(Mutex::new(Shared::default()));
-    ctx.add_plugin(ControlPlugin { shared: shared.clone() });
+    ctx.add_plugin(ControlPlugin { views: HashMap::new(), passes: Vec::new() });
+    ctx.with_plugin(|plugin: &mut ControlPlugin| {
+        plugin.views.insert(viewport, Arc::downgrade(&shared));
+    });
     ctx.enable_accesskit();
     let (tx, rx) = channel();
     (Control { rx, shared, pending: Vec::new(), next_tag: 1 }, ControlClient { tx, ctx: ctx.clone() })
@@ -179,6 +202,8 @@ pub fn attach(ctx: &egui::Context) -> (Control, ControlClient) {
 
 /// What a request needs from the app (implemented by `PdfCraftApp`).
 pub(crate) trait Host {
+    fn route_window(&mut self, doc: u64, method: &str, params: Value) -> Result<Receiver<Reply>, String>;
+    fn window(&mut self, params: &Value) -> Reply;
     fn state(&self) -> Value;
     fn command(&mut self, id: &str) -> Reply;
     fn dock(&mut self, reset: bool, params: &Value) -> Reply;
@@ -197,6 +222,7 @@ impl Control {
                 Handled::Now(r) => {
                     let _ = req.reply.send(r);
                 }
+                Handled::Forward(rx) => self.pending.push(Pending::Forward { rx, reply: req.reply, since: now_secs() }),
                 Handled::AfterFrames(frames, value) => {
                     let until_pass = self.passes() + u64::from(frames);
                     self.pending.push(Pending::Frames { until_pass, since: now_secs(), reply: req.reply, value });
@@ -233,6 +259,15 @@ impl Control {
         let mut keep = Vec::new();
         for p in self.pending.drain(..) {
             match p {
+                Pending::Forward { rx, reply, since } => match rx.try_recv() {
+                    Ok(result) => {
+                        let _ = reply.send(result);
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) if now - since <= NOT_DRAWN_TIMEOUT => keep.push(Pending::Forward { rx, reply, since }),
+                    Err(_) => {
+                        let _ = reply.send(Err("The document window closed or did not answer in time".into()));
+                    }
+                },
                 Pending::Frames { until_pass, reply, value, .. } if passes >= until_pass => {
                     let _ = reply.send(Ok(value));
                 }
@@ -274,6 +309,17 @@ impl Control {
     }
 
     fn handle(&mut self, ctx: &egui::Context, host: &mut impl Host, method: &str, p: &Value) -> Handled {
+        if let Some(target) = p.get("window") {
+            let Some(doc) = target.as_u64() else { return Handled::Now(Err("window must be a document id from ui.state.document_windows".into())) };
+            let mut params = p.clone();
+            if let Some(params) = params.as_object_mut() {
+                params.remove("window");
+            }
+            return match host.route_window(doc, method, params) {
+                Ok(rx) => Handled::Forward(rx),
+                Err(error) => Handled::Now(Err(error)),
+            };
+        }
         let str_param = |k: &str| p.get(k).and_then(Value::as_str).ok_or_else(|| format!("{method}: missing string parameter {k}"));
         let r: Result<Handled, String> = (|| match method {
             "ui.state" => {
@@ -283,6 +329,7 @@ impl Control {
                 Ok(Handled::Now(Ok(state)))
             }
             "ui.commands" => Ok(Handled::Now(Ok(host.commands()))),
+            "ui.window" => Ok(Handled::Now(host.window(p))),
             "ui.dock" | "ui.dock.reset" => Ok(Handled::Now(host.dock(method == "ui.dock.reset", p))),
             "ui.command" if str_param("id")? == "ui.dock" => Ok(Handled::Now(host.dock(false, p.get("params").unwrap_or(p)))),
             "ui.command" => Ok(Handled::Now(host.command(str_param("id")?))),
@@ -515,6 +562,7 @@ impl Control {
 }
 
 enum Handled {
+    Forward(Receiver<Reply>),
     Now(Reply),
     AfterFrames(u32, Value),
     Screenshot(Option<egui::Rect>),
@@ -644,11 +692,21 @@ fn screenshot_png(image: &egui::ColorImage, region: Option<egui::Rect>, ppp: f32
 }
 
 impl Host for crate::PdfCraftApp {
+    fn route_window(&mut self, doc: u64, method: &str, params: Value) -> Result<Receiver<Reply>, String> {
+        self.route_shared_window(doc, method, params)
+    }
+    fn window(&mut self, params: &Value) -> Reply {
+        self.shared_window_control(params)
+    }
     fn dock(&mut self, reset: bool, params: &Value) -> Reply {
         crate::docking::command(self, reset, params)
     }
 
     fn quit(&mut self, ctx: &egui::Context) -> bool {
+        if self.shared_windows.secondary {
+            self.request_close_tab(0);
+            return self.views.is_empty();
+        }
         self.request_quit(ctx)
     }
 
@@ -669,6 +727,8 @@ impl Host for crate::PdfCraftApp {
         #[cfg(target_arch = "wasm32")]
         let pending_opens: Vec<Value> = Vec::new();
         json!({
+            "document_windows": self.shared_windows_state(),
+            "primary_hidden": self.shared_windows.hidden,
             "docking": self.docking,
             "documents": docs,
             "pending_opens": pending_opens,
@@ -757,10 +817,31 @@ impl Host for crate::PdfCraftApp {
             .map(|c| json!({ "id": c.id, "label": c.label, "menu": c.menu, "enabled": self.command_enabled(c), "shortcut": c.shortcut.map(|s| s.label(cfg!(target_os = "macos"))) }))
             .collect();
         list.push(json!({"id": "ui.dock", "label": "Arrange Panel", "enabled": true, "params": "action, or operation/panel; move: target/zone/before; float/moveFloating: rect; resizeSplit: path/size; setStackOpen: open; resizeStack: height"}));
+        list.push(json!({"id": "ui.window", "label": "Document windows", "enabled": true, "params": "action=state|open|set|command|close|hide-primary, doc; set: key/value; command: id. Input/inspect/state also accept window=<doc id>. Secondary screenshots are unsupported."}));
         json!({ "commands": list })
     }
 
     fn set(&mut self, key: &str, value: &str) -> Reply {
+        if self.shared_windows.secondary
+            && !matches!(
+                key,
+                "page"
+                    | "zoom"
+                    | "layout"
+                    | "continuous"
+                    | "cover"
+                    | "panel"
+                    | "mode"
+                    | "tool"
+                    | "fields"
+                    | "organize"
+                    | "grid-zoom"
+                    | "rotate"
+                    | "select"
+            )
+        {
+            return Err("Set application preferences through the primary window; secondary ui.set accepts view options such as page, zoom, layout, panel and tool".into());
+        }
         self.set_option(key, value).map(|()| json!({ "set": key, "value": value }))
     }
 
@@ -1495,5 +1576,47 @@ mod pointer_tests {
             assert!(h.state().host.views.is_empty(), "pointer probes create no document edits");
             assert_eq!(h.ctx.options(|o| o.input_options.max_click_duration), max_duration);
         }
+    }
+}
+
+#[cfg(test)]
+mod viewport_tests {
+    use super::*;
+    use egui::Plugin as _;
+
+    #[test]
+    fn nested_output_is_reported_to_the_child_after_egui_restores_the_parent() {
+        let ctx = egui::Context::default();
+        let second = egui::ViewportId::from_hash_of("second-output");
+        let (root_control, _) = attach(&ctx);
+        let (second_control, _) = attach_for(&ctx, second);
+        let output = ctx.run_ui(Default::default(), |ui| {
+            ui.label("Primary view");
+            let mut input = egui::RawInput { viewport_id: second, ..Default::default() };
+            input.viewports.insert(second, egui::ViewportInfo { parent: Some(egui::ViewportId::ROOT), ..Default::default() });
+            ctx.run_ui(input, |ui| {
+                ui.label("Secondary view");
+            })
+            .drop_without_applying_deltas();
+        });
+        output.drop_without_applying_deltas();
+        assert_eq!(root_control.passes(), 1, "child output must not overwrite the primary view's control state");
+        assert_eq!(second_control.passes(), 1, "the child has completed one pass of its own");
+    }
+
+    #[test]
+    fn routed_input_only_reaches_its_own_viewport() {
+        let ctx = egui::Context::default();
+        let second = egui::ViewportId::from_hash_of("second");
+        let (root_control, _) = attach(&ctx);
+        let (second_control, _) = attach_for(&ctx, second);
+        root_control.inject(vec![vec![egui::Event::Text("root".into())]]);
+        second_control.inject(vec![vec![egui::Event::Text("second".into())]]);
+        let mut child_input = egui::RawInput { viewport_id: second, ..Default::default() };
+        ctx.with_plugin(|plugin: &mut ControlPlugin| plugin.input_hook(&ctx, &mut child_input));
+        assert!(matches!(child_input.events.as_slice(), [egui::Event::Text(text)] if text == "second"));
+        let mut root_input = egui::RawInput::default();
+        ctx.with_plugin(|plugin: &mut ControlPlugin| plugin.input_hook(&ctx, &mut root_input));
+        assert!(matches!(root_input.events.as_slice(), [egui::Event::Text(text)] if text == "root"));
     }
 }

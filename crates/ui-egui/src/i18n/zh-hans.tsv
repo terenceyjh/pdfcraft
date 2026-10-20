@@ -2398,3 +2398,9 @@ animation effects	Off	关
 	Make properties default	将属性设为默认
 	Pages selected	选定的页面
 	Page properties	页面属性
+	Open in New Window	在新窗口中打开
+	Second window	第二阅读窗口
+	Show primary window	显示主窗口
+	Edits are shared; reading positions are independent	修改实时同步，阅读位置互不影响
+	Post or cancel the unfinished comment before closing this view	请先发布或取消尚未提交的批注，再关闭此窗口
+	Unsaved changes	有未保存的修改

@@ -299,9 +299,9 @@ impl FileWatch {
 impl PdfCraftApp {
     /// The documents to watch: every open one with a file, while the preference is on.
     fn watched(&self) -> impl Iterator<Item = (DocId, &str, Option<Stamp>, u64)> {
-        self.views.iter().filter(|_| self.reload_changed_files).filter_map(|v| {
-            let path = self.session.get(v.id)?.path.as_deref()?;
-            Some((v.id, path, self.watch.known.get(&v.id).copied(), self.watch.epoch(v.id)))
+        self.session.docs().iter().filter(|_| self.reload_changed_files).filter_map(|doc| {
+            let path = doc.path.as_deref()?;
+            Some((doc.id, path, self.watch.known.get(&doc.id).copied(), self.watch.epoch(doc.id)))
         })
     }
 
@@ -318,7 +318,7 @@ impl PdfCraftApp {
             && sent.next().is_none();
         if !unchanged {
             let list: Vec<Watched> = self.watched().map(|(doc, path, known, epoch)| Watched { doc, path: path.to_owned(), known, epoch }).collect();
-            let open: Vec<DocId> = self.views.iter().map(|v| v.id).collect();
+            let open: Vec<DocId> = self.session.docs().iter().map(|d| d.id).collect();
             self.watch.known.retain(|doc, _| open.contains(doc));
             self.watch.basis.retain(|doc, _| open.contains(doc));
             self.watch.epoch.retain(|doc, _| open.contains(doc));
@@ -365,8 +365,11 @@ impl PdfCraftApp {
 
     /// A watched file has a new version: reload its document, or ask first when it has unsaved
     /// changes.
-    fn file_changed(&mut self, c: Changed) {
-        let Some(i) = self.views.iter().position(|v| v.id == c.doc) else { return };
+    pub(crate) fn file_changed(&mut self, c: Changed) {
+        let Some(i) = self.views.iter().position(|v| v.id == c.doc) else {
+            self.with_shared_document_view(c.doc, |app| app.file_changed(c));
+            return;
+        };
         // Found for an earlier reading or writing of the file, or for another file than the
         // document's now (a save, Save As or a reopen came between): older than the document in
         // memory, so it is not applied over it (#1802). The watcher was told the newer version.
@@ -391,7 +394,10 @@ impl PdfCraftApp {
     /// The notice bar's Reload: read the file now and replace the document, unsaved changes and
     /// all.
     fn reload_from_disk(&mut self, doc: DocId) {
-        let Some(i) = self.views.iter().position(|v| v.id == doc) else { return };
+        let Some(i) = self.views.iter().position(|v| v.id == doc) else {
+            self.with_shared_document_view(doc, |app| app.reload_from_disk(doc));
+            return;
+        };
         let Some(path) = self.session.get(doc).and_then(|d| d.path.clone()) else { return };
         let stamp = Stamp::at(&path);
         match std::fs::read(&path) {

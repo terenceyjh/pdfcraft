@@ -196,6 +196,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     c("edit.find", "Find…", EDIT, Some(Shortcut::cmd("F")), Document, "search"),
     c("edit.advanced_search", "Advanced search…", EDIT, Some(Shortcut::cmd_shift("F")), Document, "search"),
     c("view.palette", "Find tools and commands…", VIEW, Some(Shortcut::cmd("K")), Nothing, "search"),
+    c("view.new_window", "Open in New Window", VIEW, None, Document, "copy"),
     // Page display: View ▸ Page display and the rail's button list the base layouts as radios and
     // continuous scrolling as a checkbox, so `menu = None` keeps them out of the generated menus.
     // The palette still runs them.

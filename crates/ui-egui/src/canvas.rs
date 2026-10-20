@@ -368,6 +368,8 @@ pub(crate) fn snapshot_tab_name(title: &str, file_name: &str, snapshot: &Snapsho
 }
 
 pub struct DocView {
+    /// Widget identities belong to a view, even when two windows share the same DocId.
+    pub(crate) ui_namespace: egui::ViewportId,
     pub id: DocId,
     pub zoom: f32,
     pub fit: Fit,
@@ -599,6 +601,11 @@ pub struct DocView {
     slow_pages: HashSet<usize>,
 }
 
+/// Preserve existing primary-window widget identities and namespace extra reading views.
+pub(crate) fn view_ui_id(namespace: egui::ViewportId, source: impl std::hash::Hash + std::fmt::Debug) -> egui::Id {
+    if namespace == egui::ViewportId::ROOT { egui::Id::new(source) } else { egui::Id::new((source, namespace)) }
+}
+
 /// The page grid's zoom range and the step of its buttons and keys.
 pub const GRID_ZOOM_RANGE: std::ops::RangeInclusive<f32> = 0.5..=3.0;
 const GRID_ZOOM_STEP: f32 = 1.25;
@@ -699,6 +706,7 @@ impl DocView {
     pub fn new(id: DocId, info: &DocInfo, defaults: ViewDefaults) -> Self {
         Self {
             id,
+            ui_namespace: egui::ViewportId::ROOT,
             zoom: defaults.zoom,
             fit: defaults.fit,
             layout: defaults.layout,
@@ -1298,7 +1306,7 @@ impl DocView {
 
     /// Page-editor focus and drafts belong to a document, even while another tab is active.
     pub(crate) fn page_input_id(&self) -> egui::Id {
-        egui::Id::new(("page-input", self.id.0))
+        view_ui_id(self.ui_namespace, ("page-input", self.id.0))
     }
 
     /// The idle page box and unchanged-input lookup share the same label fallback.
@@ -1567,6 +1575,11 @@ impl DocView {
         self.thumb_demand.clear();
         self.frame_queue.clear();
         self.frame_visible.clear();
+    }
+
+    /// A new rendering consumer has no submitted requests, even if its PDF/view is unchanged.
+    pub(crate) fn restart_render_queue(&mut self) {
+        self.last_queue.clear();
     }
 
     pub(crate) fn need_thumbnail(&mut self, page: usize, visible: bool) {
@@ -2660,7 +2673,7 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
         ..Default::default()
     });
     // Each document keeps its own scroll position when switching tabs (#189).
-    scroll = scroll.id_salt(("page-view", view.id));
+    scroll = scroll.id_salt(("page-view", view.id, view.ui_namespace));
     // Every scroll here asks for no animation. An animated area would still queue a zero-length
     // offset target for the next frame, which overwrites the jump a page turn just set.
     scroll = scroll.animated(false);
@@ -2831,7 +2844,7 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
         }
     }
     let selection_wheel = view.selection_drag && navigation_enabled && unobstructed && !single_paging && ui.rect_contains_pointer(avail);
-    let out = page_scroll(ui, scroll, egui::Id::new(("page-view-scope", view.id)), |ui, viewport| {
+    let out = page_scroll(ui, scroll, egui::Id::new(("page-view-scope", view.id, view.ui_namespace)), |ui, viewport| {
         // egui's drag responses accept every pointer button. Keep a wheel gesture from also
         // selecting text, drawing a mark, or panning with the Hand tool.
         if middle_gesture {
@@ -3879,7 +3892,7 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     view.frame_visible = visible_now.iter().copied().collect();
 
     if let Some((pos, text)) = hover_text {
-        egui::Area::new(egui::Id::new("canvas-hover")).order(egui::Order::Tooltip).fixed_pos(pos + vec2(14.0, 16.0)).show(ui.ctx(), |ui| {
+        egui::Area::new(ui.id().with("canvas-hover")).order(egui::Order::Tooltip).fixed_pos(pos + vec2(14.0, 16.0)).show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.set_max_width(320.0);
                 ui.label(text);
@@ -4122,26 +4135,29 @@ fn selection_actions(
     let x = rect.left().clamp(viewport.left() + 8.0, (viewport.right() - 520.0).max(viewport.left() + 8.0));
     let y = if rect.bottom() + 48.0 < viewport.bottom() { rect.bottom() + 6.0 } else { (rect.top() - 44.0).max(viewport.top() + 6.0) };
     let mut chosen = None;
-    egui::Area::new(egui::Id::new(("text-selection-actions", view.id.0))).order(egui::Order::Foreground).fixed_pos(pos2(x, y)).show(ui.ctx(), |ui| {
-        egui::Frame::popup(ui.style()).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                for (label, action) in [
-                    (tl!("Add comment"), SelectionAction::Note),
-                    (tl!("Highlight"), SelectionAction::Markup(comments::CommentTool::Highlight)),
-                    (tl!("Underline"), SelectionAction::Markup(comments::CommentTool::Underline)),
-                    (tl!("Strikethrough"), SelectionAction::Markup(comments::CommentTool::StrikeOut)),
-                    (tl!("Replace text"), SelectionAction::Replace),
-                ] {
-                    if ui.add_enabled(can_comment, egui::Button::new(label)).clicked() {
-                        chosen = Some(action);
+    egui::Area::new(egui::Id::new(("text-selection-actions", view.id.0, view.ui_namespace)))
+        .order(egui::Order::Foreground)
+        .fixed_pos(pos2(x, y))
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for (label, action) in [
+                        (tl!("Add comment"), SelectionAction::Note),
+                        (tl!("Highlight"), SelectionAction::Markup(comments::CommentTool::Highlight)),
+                        (tl!("Underline"), SelectionAction::Markup(comments::CommentTool::Underline)),
+                        (tl!("Strikethrough"), SelectionAction::Markup(comments::CommentTool::StrikeOut)),
+                        (tl!("Replace text"), SelectionAction::Replace),
+                    ] {
+                        if ui.add_enabled(can_comment, egui::Button::new(label)).clicked() {
+                            chosen = Some(action);
+                        }
                     }
-                }
-                if ui.add_enabled(can_copy, egui::Button::new(tl!("Copy"))).clicked() {
-                    chosen = Some(SelectionAction::Copy);
-                }
+                    if ui.add_enabled(can_copy, egui::Button::new(tl!("Copy"))).clicked() {
+                        chosen = Some(SelectionAction::Copy);
+                    }
+                });
             });
         });
-    });
     let Some(action) = chosen else { return false };
     if let SelectionAction::Copy = action {
         // Copying closes the bar but keeps the words selected, for ⌘C or a second action.
@@ -4285,7 +4301,7 @@ fn page_size_hint(view: &DocView, info: &DocInfo, units: crate::units::Unit, are
         return;
     }
     let text = units.size(f64::from(page.width), f64::from(page.height));
-    egui::Area::new(egui::Id::new("page-size-hint"))
+    egui::Area::new(view_ui_id(view.ui_namespace, "page-size-hint"))
         .order(egui::Order::Foreground)
         .interactable(false)
         .pivot(egui::Align2::LEFT_BOTTOM)
@@ -4312,7 +4328,7 @@ fn find_bar(view: &mut DocView, pages: usize, area: Rect, ui: &mut egui::Ui, t: 
     let mut close = false;
     let mut step: Option<bool> = None;
     let searched = view.texts.len() + view.text_failed.len();
-    egui::Area::new(egui::Id::new("find-bar"))
+    egui::Area::new(view_ui_id(view.ui_namespace, "find-bar"))
         .order(egui::Order::Middle)
         .pivot(Align2::RIGHT_TOP)
         .fixed_pos(area.right_top() + vec2(-18.0, 12.0))
@@ -4327,7 +4343,7 @@ fn find_bar(view: &mut DocView, pages: usize, area: Rect, ui: &mut egui::Ui, t: 
                     ui.horizontal(|ui| {
                         ui.add(icons::image("search", 16.0, t.text_muted));
                         let edit = egui::TextEdit::singleline(&mut find.query)
-                            .id(egui::Id::new("find-input"))
+                            .id(view_ui_id(view.ui_namespace, "find-input"))
                             .hint_text(tl!("Find text"))
                             .desired_width(220.0)
                             .frame(egui::Frame::NONE);
@@ -4628,7 +4644,8 @@ fn notice_bar(ui: &mut egui::Ui, t: &Tokens, icon: &str, icon_color: Color32, te
 fn quick_bar(app: &mut PdfCraftApp, area: Rect, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     let pos = area.left_top() + vec2(14.0, 14.0);
-    egui::Area::new(egui::Id::new("quick-bar")).order(egui::Order::Middle).fixed_pos(pos).show(ui.ctx(), |ui| {
+    let namespace = app.active.and_then(|i| app.views.get(i)).map_or(egui::ViewportId::ROOT, |v| v.ui_namespace);
+    egui::Area::new(view_ui_id(namespace, "quick-bar")).order(egui::Order::Middle).fixed_pos(pos).show(ui.ctx(), |ui| {
         egui::Frame::NONE
             .fill(t.card)
             .stroke(Stroke::new(1.0, t.border))

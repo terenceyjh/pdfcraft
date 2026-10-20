@@ -1384,51 +1384,55 @@ pub(crate) fn composer(ctx: &egui::Context, view: &mut DocView, info: &DocInfo, 
         ComposerKind::Edit(_) => "Edit comment",
     };
     let pos = pos2(anchor.x + 12.0, anchor.y);
-    egui::Area::new(egui::Id::new(("comment-composer", view.id.0))).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
-        egui::Frame::popup(ui.style()).inner_margin(egui::Margin::same(12)).corner_radius(CornerRadius::same(8)).show(ui, |ui| {
-            ui.set_width(260.0);
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(crate::bidi::visual_auto(&prefs.author)).font(theme::semibold(13.0)));
-                ui.label(egui::RichText::new(tl!(title)).font(theme::regular(11.5)).color(t.text_faint));
-            });
-            ui.add_space(6.0);
-            let hint = match c.kind {
-                ComposerKind::TextBox | ComposerKind::Callout { .. } => tl!("Type text"),
-                ComposerKind::Caret { .. } => tl!("Text to insert"),
-                ComposerKind::Replace => tl!("Replacement text"),
-                _ => tl!("Add a comment"),
-            };
-            let edit =
-                ui.add(egui::TextEdit::multiline(&mut c.text).hint_text(hint).desired_rows(3).desired_width(f32::INFINITY).id_salt("composer-text"));
-            if c.focus {
-                edit.request_focus();
-                c.focus = false;
-            }
-            let enter = submit_key(ui, &edit, false);
-            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                cancel = true;
-            }
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let can_post = !c.text.trim().is_empty() || matches!(c.kind, ComposerKind::Edit(_));
-                    if ui
-                        .add_enabled(
-                            can_post,
-                            egui::Button::new(egui::RichText::new(tl!("Post")).color(Color32::WHITE)).fill(t.accent).corner_radius(14),
-                        )
-                        .clicked()
-                        || (enter && can_post)
-                    {
-                        post = true;
-                    }
-                    if ui.add(egui::Button::new(tl!("Cancel")).corner_radius(14)).clicked() {
-                        cancel = true;
-                    }
+    egui::Area::new(egui::Id::new(("comment-composer", view.id.0, view.ui_namespace))).order(egui::Order::Foreground).fixed_pos(pos).show(
+        ctx,
+        |ui| {
+            egui::Frame::popup(ui.style()).inner_margin(egui::Margin::same(12)).corner_radius(CornerRadius::same(8)).show(ui, |ui| {
+                ui.set_width(260.0);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(crate::bidi::visual_auto(&prefs.author)).font(theme::semibold(13.0)));
+                    ui.label(egui::RichText::new(tl!(title)).font(theme::regular(11.5)).color(t.text_faint));
+                });
+                ui.add_space(6.0);
+                let hint = match c.kind {
+                    ComposerKind::TextBox | ComposerKind::Callout { .. } => tl!("Type text"),
+                    ComposerKind::Caret { .. } => tl!("Text to insert"),
+                    ComposerKind::Replace => tl!("Replacement text"),
+                    _ => tl!("Add a comment"),
+                };
+                let edit = ui.add(
+                    egui::TextEdit::multiline(&mut c.text).hint_text(hint).desired_rows(3).desired_width(f32::INFINITY).id_salt("composer-text"),
+                );
+                if c.focus {
+                    edit.request_focus();
+                    c.focus = false;
+                }
+                let enter = submit_key(ui, &edit, false);
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    cancel = true;
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let can_post = !c.text.trim().is_empty() || matches!(c.kind, ComposerKind::Edit(_));
+                        if ui
+                            .add_enabled(
+                                can_post,
+                                egui::Button::new(egui::RichText::new(tl!("Post")).color(Color32::WHITE)).fill(t.accent).corner_radius(14),
+                            )
+                            .clicked()
+                            || (enter && can_post)
+                        {
+                            post = true;
+                        }
+                        if ui.add(egui::Button::new(tl!("Cancel")).corner_radius(14)).clicked() {
+                            cancel = true;
+                        }
+                    });
                 });
             });
-        });
-    });
+        },
+    );
     if cancel {
         view.comments.composer = None;
         return None;

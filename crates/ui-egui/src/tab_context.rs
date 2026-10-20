@@ -2,6 +2,7 @@
 use pdfcraft_engine::DocId;
 
 pub(crate) enum Action {
+    NewWindow(DocId),
     Close(DocId),
     Reopen,
     Reveal(DocId),
@@ -10,6 +11,11 @@ pub(crate) enum Action {
 impl crate::PdfCraftApp {
     pub(crate) fn tab_action(&mut self, action: Action) {
         match action {
+            Action::NewWindow(id) => {
+                if let Err(error) = self.open_document_window(id) {
+                    self.notify_error(error);
+                }
+            }
             Action::Close(id) => {
                 if let Some(i) = self.views.iter().position(|v| v.id == id) {
                     self.request_close_tab(i);

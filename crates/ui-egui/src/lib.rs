@@ -101,6 +101,7 @@ mod panels;
 mod pickers;
 pub mod prepare;
 mod print_ui;
+mod shared_windows;
 mod signature_drag;
 pub mod units;
 mod web_print;
@@ -484,6 +485,7 @@ pub struct RecentFile {
 }
 
 pub struct PdfCraftApp {
+    pub(crate) shared_windows: shared_windows::Windows,
     pub docking: docking::Workspace,
     pub(crate) pending_panel_reveals: Vec<docking::Panel>,
     pub session: Session,
@@ -890,6 +892,7 @@ fn rgb_triple(v: &serde_json::Value) -> Option<[f64; 3]> {
 impl PdfCraftApp {
     pub fn new() -> Self {
         Self {
+            shared_windows: Default::default(),
             session: Session::new(),
             views: Vec::new(),
             closed_tabs: Vec::new(),
@@ -1807,6 +1810,14 @@ impl PdfCraftApp {
             }
             return;
         }
+        // A closed primary tab may still have a live, edited document in a second window.
+        if let Some(i) = self.reattach_shared_document(path) {
+            self.active = Some(i);
+            if let Some(command) = then {
+                self.execute(command);
+            }
+            return;
+        }
         if self.pending_opens.iter().any(|p| p.path.as_deref().is_some_and(|p| same_file(p, path))) {
             return;
         }
@@ -1897,15 +1908,18 @@ impl PdfCraftApp {
             return;
         }
         let id = self.views.remove(index).id;
+        let shared = self.document_open_elsewhere(id);
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(path) = self.session.get(id).and_then(|d| d.path.clone()) {
+        if !shared && let Some(path) = self.session.get(id).and_then(|d| d.path.clone()) {
             if self.closed_tabs.len() == 10 {
                 self.closed_tabs.remove(0);
             }
             self.closed_tabs.push(path);
         }
-        self.forget_recovery(id);
-        self.session.close(id);
+        if !shared {
+            self.forget_recovery(id);
+            self.session.close(id);
+        }
         self.active = match self.active {
             _ if self.views.is_empty() => None,
             Some(a) if a > index => Some(a - 1),
@@ -3125,6 +3139,7 @@ impl eframe::App for PdfCraftApp {
             ctx.request_repaint();
             return;
         }
+        self.sync_shared_document_views();
         for view in &mut self.views {
             view.begin_render_frame();
         }
@@ -3157,6 +3172,7 @@ impl eframe::App for PdfCraftApp {
             self.show_progress(&ctx);
             widgets::toast(self, &ctx);
             self.finish_render_frame(&ctx);
+            self.show_shared_windows(&ctx, _frame);
             return;
         }
         self.sync_window_frame(&ctx);
@@ -3200,6 +3216,7 @@ impl eframe::App for PdfCraftApp {
         self.show_progress(&ctx);
         widgets::toast(self, &ctx);
         self.finish_render_frame(&ctx);
+        self.show_shared_windows(&ctx, _frame);
     }
 }
 
@@ -3216,14 +3233,16 @@ impl PdfCraftApp {
                 && Some(i) != partner
                 && let Some(doc) = self.session.get(view.id)
             {
-                view.suspend_rendering(&doc.renderer);
+                let pool = self.shared_windows.renderers.get(&view.id).map_or(&doc.renderer, |r| &r.pool);
+                view.suspend_rendering(pool);
             }
         }
         for i in self.active.into_iter().chain(partner) {
             if let Some(view) = self.views.get_mut(i)
                 && let Some(doc) = self.session.get(view.id)
             {
-                view.finish_render_frame(ctx, &doc.info, &doc.renderer);
+                let pool = self.shared_windows.renderers.get(&view.id).map_or(&doc.renderer, |r| &r.pool);
+                view.finish_render_frame(ctx, &doc.info, pool);
             }
         }
     }

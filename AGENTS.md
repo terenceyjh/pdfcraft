@@ -120,6 +120,45 @@ PdfCraft opens files from strangers, and people trust it with their work. A malf
 
 Follow `CLAUDE.md`. It covers quality gates, layering, commit rules and how to run and look at the app.
 
+## Local development log — shared PDF windows (2026-10-21)
+
+- Completed the user-requested roadmap and implementation; see `docs/shared-document-windows.md`
+  for design, steps, usage, verification and limits. Work is on `feat/shared-document-windows`.
+- `shared_windows.rs` provides one extra reading/annotation shell per DocId. A drop guard lends
+  the unique Session, file watcher and recovery metadata to the shell for a UI pass and returns
+  them even while unwinding. Navigation, tools, drafts, widget identities and render queues are
+  independent. Renderers track both document generation and display bytes, including configuration
+  changes that do not rewrite the PDF. The source PDF is never copied to synchronize edits.
+- View and tab context menus expose `view.new_window`; repeats focus the existing second view.
+  Shared save/Save As/undo/redo, last-view save prompts, primary-window hide/restore, reattachment
+  after closing the primary tab, and unposted-comment protection are implemented.
+- The opt-in control channel supports `ui.window` and window-targeted input/inspect/state on its
+  existing authenticated connection; no additional listener. Global preferences remain primary.
+  Pair control feedback with raw-input viewport IDs because egui restores the parent before
+  output_hook. Immediate/WGPU secondary screenshots return an explicit unsupported error.
+- Added six clean-room, contributor-original UI translations to each of the 22 existing catalogs;
+  preserved existing provenance and updated the corresponding ATTRIBUTION.toml hashes. Generated
+  ATTRIBUTION.md with the asset tool. No new fonts, icons or committed binary fixtures.
+- Rust 1.96.0, Cargo, rustup, registry/git caches and the wasm target live under `.tools/`; builds
+  go to `target/`. User CARGO_HOME/RUSTUP_HOME/CARGO_TARGET_DIR and PATH point into this project.
+  `dev-env.ps1 -Proxy` reloads this shell's settings and uses 127.0.0.1:10819 for Cargo/GitHub.
+  The temporary installation was migrated out of the user-profile .cargo/.rustup directories.
+- Verification: 478 UI unit tests passed, 1 existing case ignored; commands 24, comments 51,
+  control 52, recovery 12 and reload 11 integration tests passed (628 passing tests in total).
+  Scoped engine/UI Clippy --all-targets -D warnings, formatting, diff checks, 37-crate layering,
+  assets, parity and scoped wasm compilation passed. Wasm retains unrelated existing dead-code
+  warnings. Regression tests for input isolation, final-draft close protection and render-config
+  refresh were actually observed failing before the fix and passing afterward.
+- Windows native smoke test: two real windows at chapters 1/3, notes posted from both input boxes,
+  shared save/undo/redo, saved file reopened independently with 2 annotations, primary-tab close
+  and reattach without a new DocId, primary hide/restore while child stays responsive, secondary
+  close, repeated open, and unposted-primary-note exit protection all passed. Primary screenshot
+  and completed headless secondary rendering were inspected. Native capture helper timed out on
+  retry; this is documented, with no claim of a successful native secondary screenshot.
+- QA artifacts are ignored in `target/qa`. Native QA uses portable mode in `target/debug`, keeping
+  settings and recovery under the project. Limit: two views per PDF, desktop only; independent
+  processes and restart restoration are not synchronized. Keep all contributor rules above.
+
 ## Contributor credits (About window)
 
 - About ▸ Contributors/Models are compiled into the binary from `contributors/contributors.json`

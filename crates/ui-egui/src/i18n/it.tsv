@@ -2646,3 +2646,9 @@ certificate	Key usage	Utilizzo chiave
 certificate	Self-signed	Autofirmato
 certificate	SHA-1 digest	Impronta SHA-1
 certificate	SHA-256 digest	Impronta SHA-256
+	Open in New Window	Apri in una nuova finestra
+	Second window	Seconda finestra
+	Show primary window	Mostra finestra principale
+	Edits are shared; reading positions are independent	Le modifiche sono condivise; le posizioni di lettura sono indipendenti
+	Post or cancel the unfinished comment before closing this view	Pubblica o annulla il commento incompleto prima di chiudere questa vista
+	Unsaved changes	Modifiche non salvate

@@ -80,6 +80,9 @@ impl PdfCraftApp {
     /// Whether a registered command can run now. The engine judges the document (security,
     /// contents, undo history); view state it can't see is checked here.
     pub(crate) fn command_enabled(&self, spec: &CommandSpec) -> bool {
+        if !self.secondary_command_allowed(spec.id) || (spec.id == "view.new_window" && cfg!(target_arch = "wasm32")) {
+            return false;
+        }
         // Undo and Redo act on the Combine files list while its tab shows.
         if self.combine_showing() && matches!(spec.needs, commands::Needs::Undo | commands::Needs::Redo) {
             return self.combine_can_undo(spec.needs == commands::Needs::Undo);
@@ -152,6 +155,13 @@ impl PdfCraftApp {
         let active = self.active;
         let targets = active.map(|i| self.views[i].target_pages()).unwrap_or_default();
         match id {
+            "view.new_window" => {
+                if let Some((_, doc)) = self.active_ids()
+                    && let Err(error) = self.open_document_window(doc)
+                {
+                    self.notify_error(error);
+                }
+            }
             "ui.dock.reset" => {
                 if let Err(error) = crate::docking::command(self, true, &serde_json::Value::Null) {
                     self.notify(error);

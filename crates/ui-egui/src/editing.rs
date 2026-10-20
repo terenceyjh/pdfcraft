@@ -51,6 +51,9 @@ impl PdfCraftApp {
         match self.session.apply(id, edit.clone()) {
             Ok(()) => {
                 let Some(doc) = self.session.get(id) else { return true };
+                if let Some(version) = self.shared_windows.versions.get_mut(&id) {
+                    *version = doc.edit_generation();
+                }
                 let info = &doc.info;
                 let view = &mut self.views[i];
                 // A picture picked with the Select tool may be the one this edit removed or moved:
@@ -782,6 +785,21 @@ impl PdfCraftApp {
 
     /// Close a tab, asking first if it has unsaved changes.
     pub fn request_close_tab(&mut self, index: usize) {
+        if let Some(id) = self.views.get(index).map(|v| v.id)
+            && (self.shared_windows.secondary || self.document_open_elsewhere(id))
+            && self.shared_draft_open(id)
+        {
+            return;
+        }
+        if let Some(id) = self.views.get(index).map(|v| v.id)
+            && self.document_open_elsewhere(id)
+        {
+            // Closing a view keeps the shared document and commits its form typing first.
+            if self.commit_typing_in(id) {
+                self.close_tab(index);
+            }
+            return;
+        }
         // Text typed into a field counts as an unsaved change.
         if self.has_unsaved_work(index)
             && let Some(id) = self.views.get(index).map(|v| v.id)
@@ -895,6 +913,10 @@ impl PdfCraftApp {
     /// Request a normal application exit, preserving every unsaved document until answered.
     /// Returns false while the existing save/discard/cancel prompt needs a decision.
     pub(crate) fn request_quit(&mut self, ctx: &egui::Context) -> bool {
+        if !self.prepare_shared_quit() {
+            return false;
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         if self.first_dirty().is_some() {
             self.close_request = Some(CloseRequest::Quit);
             ctx.request_repaint();
@@ -931,6 +953,16 @@ impl PdfCraftApp {
         }
         self.sync_unsaved_flag();
         if !ctx.input(|i| i.viewport().close_requested()) {
+            return;
+        }
+        if !self.allow_quit {
+            let ids: Vec<_> = self.views.iter().map(|v| v.id).collect();
+            if ids.into_iter().any(|id| self.shared_draft_open(id)) {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                return;
+            }
+        }
+        if !self.allow_quit && self.hide_primary_for_children(ctx) {
             return;
         }
         // `first_dirty` counts text typed into a field as an unsaved change.

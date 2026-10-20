@@ -579,6 +579,13 @@ impl Document {
         self.generation
     }
 
+    /// An independent rendering consumer for another view of this live document.
+    /// The PDF bytes are shared; queues and results are private to the caller, so scrolling
+    /// one window cannot cancel or consume the other window's page requests.
+    pub fn view_renderer(&self) -> RenderPool {
+        RenderPool::new(self.display.clone(), render_threads(), self.config.clone())
+    }
+
     /// Edit a PDF ▸ Edit text: the lines of existing text on `page` (0-based).
     pub fn text_lines(&self, page: usize) -> Vec<pdfcraft_edit::TextLine> {
         self.editor.as_ref().and_then(|e| pdfcraft_edit::text_lines(&e.cos, page).ok()).unwrap_or_default()
