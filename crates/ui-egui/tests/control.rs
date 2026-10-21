@@ -125,6 +125,83 @@ fn shared_document_window_control_preserves_independent_views_and_last_close_gua
 }
 
 #[test]
+fn side_by_side_button_opens_existing_tabs_and_repeated_files_in_fixed_columns() {
+    let (mut h, c) = harness();
+    h.state_mut().set_option("mode", "read").unwrap();
+    h.state_mut().open_bytes("other.pdf", None, fixture(7)).unwrap();
+    h.run_steps(3);
+    h.get_by_label("Read Side by Side").click();
+    h.run_steps(4);
+    let state = ok(&mut h, &c, "ui.state", json!({}));
+    assert_eq!(state["active"]["doc"], 2);
+    assert_eq!(state["document_windows"][0]["doc"], 1, "existing tabs become adjacent columns");
+    assert_eq!(state["document_windows"].as_array().unwrap().len(), 1);
+    ok(&mut h, &c, "ui.command", json!({"id":"view.tile_windows"}));
+    assert_eq!(ok(&mut h, &c, "ui.window", json!({})).as_array().unwrap().len(), 1, "the layout action is idempotent");
+    for _ in 0..2 {
+        ok(&mut h, &c, "ui.command", json!({"id":"view.new_pane"}));
+    }
+    h.run_steps(3);
+    let state = ok(&mut h, &c, "ui.state", json!({}));
+    assert_eq!(state["document_windows"].as_array().unwrap().len(), 3);
+    assert_eq!(state["document_windows"][1]["doc"], 2);
+    assert_eq!(state["document_windows"][2]["doc"], 2);
+    let root = state["document_workspace"]["primary_rect"].as_array().unwrap();
+    for window in state["document_windows"].as_array().unwrap() {
+        assert_eq!(window["rect"][1], root[1]);
+        assert_eq!(window["rect"][3], root[3]);
+    }
+    ok(&mut h, &c, "ui.window", json!({"action":"close","view":3}));
+    ok(&mut h, &c, "ui.window", json!({"action":"close","view":2}));
+    h.run_steps(3);
+    let wider = ok(&mut h, &c, "ui.state", json!({}));
+    let width = |v: &Value| v[2].as_f64().unwrap() - v[0].as_f64().unwrap();
+    assert!(width(&wider["document_workspace"]["primary_rect"]) > width(&state["document_workspace"]["primary_rect"]) * 1.7);
+    ok(&mut h, &c, "ui.window", json!({"action":"close","view":1}));
+    h.run_steps(3);
+    assert_eq!(h.state().views.len(), 2, "closing columns keeps the original tabs");
+    assert!(ok(&mut h, &c, "ui.state", json!({}))["document_workspace"]["primary_rect"].is_null());
+}
+
+#[test]
+fn narrow_split_workspace_scrolls_horizontally_and_refills_when_resized() {
+    let (mut h, c) = harness();
+    h.state_mut().set_option("mode", "read").unwrap();
+    for _ in 0..3 {
+        ok(&mut h, &c, "ui.command", json!({"id":"view.new_pane"}));
+    }
+    h.set_size(egui::vec2(800.0, 600.0));
+    h.run_steps(4);
+    let small = ok(&mut h, &c, "ui.state", json!({}));
+    let viewport = &small["document_workspace"]["viewport"];
+    let last = &small["document_windows"][2]["rect"];
+    assert!(last[2].as_f64().unwrap() > viewport[2].as_f64().unwrap(), "narrow windows retain a horizontally scrollable row");
+    for window in small["document_windows"].as_array().unwrap() {
+        let rect = &window["rect"];
+        assert!(rect[2].as_f64().unwrap() - rect[0].as_f64().unwrap() >= 279.0);
+        assert!(rect[3].as_f64().unwrap() <= 600.0, "columns remain clipped to the reading area");
+    }
+    let old_left = small["document_workspace"]["primary_rect"][0].as_f64().unwrap();
+    h.event(egui::Event::PointerMoved(egui::pos2(viewport[0].as_f64().unwrap() as f32 + 40.0, viewport[1].as_f64().unwrap() as f32 + 14.0)));
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(-400.0, 0.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run_steps(12);
+    let scrolled = ok(&mut h, &c, "ui.state", json!({}));
+    assert!(scrolled["document_workspace"]["primary_rect"][0].as_f64().unwrap() < old_left - 100.0, "horizontal scrolling reaches the later columns");
+    h.set_size(egui::vec2(1800.0, 1050.0));
+    h.run_steps(4);
+    let large = ok(&mut h, &c, "ui.state", json!({}));
+    let last = &large["document_windows"][2]["rect"];
+    let viewport = &large["document_workspace"]["viewport"];
+    assert!((last[2].as_f64().unwrap() - viewport[2].as_f64().unwrap()).abs() < 2.0, "columns fill the newly available width");
+    assert!(last[3].as_f64().unwrap() > 1000.0, "columns follow the main window's height");
+}
+
+#[test]
 fn internal_windows_mix_documents_and_only_the_focused_view_receives_navigation() {
     let (mut h, c) = harness();
     h.state_mut().set_option("mode", "read").unwrap();
@@ -145,6 +222,12 @@ fn internal_windows_mix_documents_and_only_the_focused_view_receives_navigation(
         assert_eq!(window["kind"], "embedded");
         assert!(window["rect"].is_array(), "each pane is drawn inside the main window");
     }
+    let rects: Vec<_> = state["document_windows"].as_array().unwrap().iter().map(|w| w["rect"].as_array().unwrap()).collect();
+    for pair in rects.windows(2) {
+        assert_eq!(pair[0][1], pair[1][1], "all columns start at the same height");
+        assert_eq!(pair[0][3], pair[1][3], "all columns fill the reading area's height");
+        assert!(pair[0][2].as_f64().unwrap() <= pair[1][0].as_f64().unwrap(), "columns never overlap");
+    }
     ok(&mut h, &c, "ui.window", json!({"action":"focus","view":2}));
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::ArrowLeft);
     h.run_steps(2);
@@ -159,13 +242,13 @@ fn internal_windows_mix_documents_and_only_the_focused_view_receives_navigation(
     ok(&mut h, &c, "ui.drag", json!({"from":[x+220.0,y+16.0],"to":[x+180.0,y+36.0]}));
     let moved = ok(&mut h, &c, "ui.state", json!({}));
     let moved = moved["document_windows"][0]["rect"].as_array().unwrap();
-    assert!(moved[0].as_f64().unwrap() < x - 5.0, "the internal title bar moves the window");
-    let (right, bottom) = (moved[2].as_f64().unwrap(), moved[3].as_f64().unwrap());
-    let width = right - moved[0].as_f64().unwrap();
-    ok(&mut h, &c, "ui.drag", json!({"from":[right-2.0,bottom-2.0],"to":[right-50.0,bottom-40.0]}));
+    assert_eq!(moved[0].as_f64().unwrap(), x, "a fixed column cannot be moved by its header");
+    assert_eq!(moved[1].as_f64().unwrap(), y);
+    let width = moved[2].as_f64().unwrap() - x;
+    ok(&mut h, &c, "ui.drag", json!({"from":[x-3.0,y+180.0],"to":[x+47.0,y+180.0]}));
     let resized = ok(&mut h, &c, "ui.state", json!({}));
     let resized = resized["document_windows"][0]["rect"].as_array().unwrap();
-    assert!(resized[2].as_f64().unwrap() - resized[0].as_f64().unwrap() < width - 20.0, "the internal resize grip changes its size");
+    assert!(resized[2].as_f64().unwrap() - resized[0].as_f64().unwrap() < width - 20.0, "dragging a separator resizes adjacent columns");
     ok(&mut h, &c, "ui.command", json!({"id":"view.cascade_windows"}));
     ok(&mut h, &c, "ui.command", json!({"id":"view.tile_windows"}));
     if let Ok(dir) = std::env::var("PDFCRAFT_SHOT_DIR") {
@@ -269,14 +352,15 @@ fn control_focus_traverses_real_widgets_and_keyboard_activates() {
     let (mut h, c) = harness();
     ok(&mut h, &c, "ui.focus", json!({"label": "Read"}));
     let read = ok(&mut h, &c, "ui.inspect", json!({"query": "Read", "role": "Button"}));
-    assert_eq!(read["widgets"][0]["focused"], true, "{read}");
-    assert_eq!(read["widgets"][0]["focusable"], true);
+    let button = read["widgets"].as_array().unwrap().iter().find(|w| w["label"] == "Read").unwrap();
+    assert_eq!(button["focused"], true, "{read}");
+    assert_eq!(button["focusable"], true);
     ok(&mut h, &c, "ui.key", json!({"key": "Tab"}));
     let edit = ok(&mut h, &c, "ui.inspect", json!({"query": "Edit", "role": "Button"}));
     assert!(edit["widgets"].as_array().unwrap().iter().any(|w| w["label"] == "Edit" && w["focused"] == true), "{edit}");
     ok(&mut h, &c, "ui.key", json!({"key": "Tab", "modifiers": ["shift"]}));
     let read = ok(&mut h, &c, "ui.inspect", json!({"query": "Read", "role": "Button"}));
-    assert_eq!(read["widgets"][0]["focused"], true);
+    assert!(read["widgets"].as_array().unwrap().iter().any(|w| w["label"] == "Read" && w["focused"] == true));
     ok(&mut h, &c, "ui.key", json!({"key": "Enter"}));
     let state = ok(&mut h, &c, "ui.state", json!({}));
     assert_eq!(state["mode"], "Read");
@@ -336,7 +420,8 @@ fn control_focus_rejects_missing_ambiguous_disabled_and_nonfocusable_targets() {
     assert!(call(&mut h, &c, "ui.focus", json!({"id": nonfocusable["id"]})).is_err());
     let read = widgets["widgets"].as_array().unwrap().iter().find(|w| w["label"] == "Read").unwrap();
     ok(&mut h, &c, "ui.focus", json!({"id": read["id"]}));
-    assert_eq!(ok(&mut h, &c, "ui.inspect", json!({"query": "Read", "role": "Button"}))["widgets"][0]["focused"], true);
+    let focused = ok(&mut h, &c, "ui.inspect", json!({"query": "Read", "role": "Button", "focused": true}));
+    assert_eq!(focused["widgets"][0]["label"], "Read");
     // Home has no active document, so its document-only toolbar controls are disabled.
     ok(&mut h, &c, "ui.click", json!({"label": "Home"}));
     assert_eq!(ok(&mut h, &c, "ui.state", json!({}))["home"], true);
@@ -1770,9 +1855,11 @@ fn click_and_drag_refuse_coordinates_that_overflow_like_move() {
         let e = call(&mut h, &c, method, params.clone()).expect_err(&format!("{method} {params} is refused"));
         assert!(e.starts_with(&format!("{method}: ")) && e.contains("finite"), "{e}");
         h.run_steps(4);
-        assert_eq!(ok(&mut h, &c, "ui.inspect", json!({ "query": "Read", "role": "Button" }))["count"], 1);
+        let read = ok(&mut h, &c, "ui.inspect", json!({ "query": "Read", "role": "Button" }));
+        assert_eq!(read["widgets"].as_array().unwrap().iter().filter(|w| w["label"] == "Read").count(), 1);
     }
-    let read = ok(&mut h, &c, "ui.inspect", json!({ "query": "Read", "role": "Button" }))["widgets"][0]["rect"].clone();
+    let widgets = ok(&mut h, &c, "ui.inspect", json!({ "query": "Read", "role": "Button" }));
+    let read = widgets["widgets"].as_array().unwrap().iter().find(|w| w["label"] == "Read").unwrap()["rect"].clone();
     let (x, y) = (read[0].as_f64().unwrap() + 4.0, read[1].as_f64().unwrap() + 4.0);
     assert_eq!(ok(&mut h, &c, "ui.click", json!({ "x": x, "y": y }))["clicked"], json!([x, y]));
     ok(&mut h, &c, "ui.drag", json!({ "from": [x, y], "to": [x + 10.0, y], "steps": 2 }));

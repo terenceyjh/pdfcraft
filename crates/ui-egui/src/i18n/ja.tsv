@@ -2440,7 +2440,7 @@ animation effects	Off	オフ
 	Edits are shared; reading positions are independent	編集内容は共有され、閲覧位置は独立しています
 	Post or cancel the unfinished comment before closing this view	この表示を閉じる前に、入力中のコメントを投稿またはキャンセルしてください
 	Unsaved changes	未保存の変更
-	Open in Internal Window	アプリ内の新しいウィンドウで開く
-	Tile document windows	文書ウィンドウを並べる
-	Cascade document windows	文書ウィンドウを重ねる
+	Open in Right Split	右の分割表示で開く
+	Read Side by Side	並べて読む
+	Reset Split Widths	分割幅をリセット
 	Primary view	メインビュー

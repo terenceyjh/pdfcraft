@@ -1,4 +1,4 @@
-//! Independent native views over one live Session. Only the UI thread mutates documents.
+//! Fixed reading columns and independent native views over one live Session. Only the UI thread mutates documents.
 //! A secondary shell borrows the session for its pass, then returns it even during unwinding.
 
 use std::collections::{HashMap, HashSet};
@@ -40,8 +40,8 @@ pub(crate) struct Windows {
     input_active: bool,
     requests: Vec<(DocId, bool)>,
     pub(crate) area: Option<egui::Rect>,
-    revision: u64,
-    cascade: bool,
+    widths: Vec<f32>,
+    pub(crate) primary_rect: Option<egui::Rect>,
 }
 
 /// A session has exactly one owner even if a view panics while it is borrowing it.
@@ -138,22 +138,46 @@ impl Drop for KeyboardLease {
     }
 }
 
-fn pane_id(id: u64, revision: u64) -> egui::Id {
-    egui::Id::new(("document-pane", id, revision))
+const SPLIT_GAP: f32 = 6.0;
+const MIN_COLUMN: f32 = 280.0;
+
+/// Columns share one bounded row. Widths are positive weights owned by the workspace.
+fn column_rects(area: egui::Rect, widths: &[f32]) -> Vec<egui::Rect> {
+    let count = widths.len();
+    if count == 0 || !area.is_positive() {
+        return Vec::new();
+    }
+    let usable = (area.width() - SPLIT_GAP * count.saturating_sub(1) as f32).max(0.0);
+    let total: f32 = widths.iter().map(|w| if w.is_finite() && *w > 0.0 { *w } else { 1.0 }).sum();
+    let mut left = area.left();
+    widths
+        .iter()
+        .enumerate()
+        .map(|(index, weight)| {
+            let weight = if weight.is_finite() && *weight > 0.0 { *weight } else { 1.0 };
+            let right = if index + 1 == count { area.right() } else { left + usable * weight / total };
+            let rect = egui::Rect::from_min_max(egui::pos2(left, area.top()), egui::pos2(right, area.bottom()));
+            left = right + SPLIT_GAP;
+            rect
+        })
+        .collect()
 }
 
-fn pane_rect(area: egui::Rect, index: usize, count: usize, cascade: bool) -> egui::Rect {
-    let area = area.shrink(3.0);
-    if cascade {
-        let step = 28.0 * (index % 8) as f32;
-        let size = area.size() * 0.75;
-        let offset = egui::vec2(step.min((area.width() - size.x).max(0.0)), step.min((area.height() - size.y).max(0.0)));
-        return egui::Rect::from_min_size(area.min + offset, size);
-    }
-    let columns = (count.max(1) as f32).sqrt().ceil() as usize;
-    let rows = count.max(1).div_ceil(columns);
-    let size = egui::vec2(area.width() / columns as f32, area.height() / rows as f32);
-    egui::Rect::from_min_size(area.min + egui::vec2((index % columns) as f32 * size.x, (index / columns) as f32 * size.y), size).shrink(3.0)
+/// A tab-like header in the normal document flow, without a movable window frame.
+fn column_header(ui: &mut egui::Ui, title: &str, selected: bool, closable: bool) -> bool {
+    let t = theme::Tokens::get(ui.ctx());
+    let mut close = false;
+    egui::Frame::NONE.fill(if selected { t.accent_soft } else { t.chrome }).inner_margin(4.0).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            let width = (ui.available_width() - if closable { 32.0 } else { 0.0 }).max(0.0);
+            ui.add_sized([width, 24.0], egui::Label::new(egui::RichText::new(title).strong()).truncate()).on_hover_text(title);
+            if closable {
+                close = ui.button("×").on_hover_text(tl!("Close Tab")).clicked();
+            }
+        });
+    });
+    close
 }
 
 impl PdfCraftApp {
@@ -161,12 +185,32 @@ impl PdfCraftApp {
         self.shared_windows.entries.iter().any(|w| w.embedded)
     }
 
-    pub(crate) fn arrange_document_panes(&mut self, cascade: bool) {
-        self.shared_windows.cascade = cascade;
-        self.shared_windows.revision = self.shared_windows.revision.wrapping_add(1);
+    pub(crate) fn arrange_document_panes(&mut self) {
+        self.shared_windows.widths.clear();
         if let Some(ctx) = &self.ctx {
             ctx.request_repaint();
         }
+    }
+
+    /// Expose existing tabs in adjacent columns once; repeated single-file requests do not
+    /// accidentally add more columns. Explicit new_pane is how a file is opened repeatedly.
+    pub(crate) fn read_tabs_side_by_side(&mut self) {
+        let primary = self.active_ids().map(|(_, id)| id);
+        let docs: Vec<_> = self.views.iter().map(|v| v.id).filter(|id| Some(*id) != primary).collect();
+        for id in docs {
+            if !self.shared_windows.entries.iter().any(|w| w.embedded && w.app.views.iter().any(|v| v.id == id))
+                && let Err(error) = self.open_document_pane(id)
+            {
+                self.notify_error(error);
+            }
+        }
+        if !self.has_document_panes()
+            && let Some(id) = primary
+            && let Err(error) = self.open_document_pane(id)
+        {
+            self.notify_error(error);
+        }
+        self.arrange_document_panes();
     }
 
     pub(crate) fn primary_keyboard_active(&self) -> bool {
@@ -182,68 +226,117 @@ impl PdfCraftApp {
             return;
         }
         if let Some(pos) = ctx.input(|i| i.pointer.press_origin().filter(|_| i.pointer.any_pressed())) {
-            let layer = ctx.layer_id_at(pos);
-            let focused = self
+            // Popups/dialogs keep their owning column. All column bodies otherwise live on
+            // the parent's normal layer, so focus follows their clipped content rectangles.
+            if ctx.layer_id_at(pos).is_some_and(|layer| layer.order >= egui::Order::Foreground) {
+                return;
+            }
+            self.shared_windows.focused = self
                 .shared_windows
                 .entries
                 .iter()
-                .find(|w| w.embedded && layer.is_some_and(|l| l.id == pane_id(w.id, self.shared_windows.revision)))
+                .find(|w| w.embedded && w.rect.is_some_and(|r| r.contains(pos)) && self.shared_windows.area.is_some_and(|area| area.contains(pos)))
                 .map(|w| w.id);
-            if focused.is_some() || layer.is_none_or(|l| l.order < egui::Order::Foreground) {
-                self.shared_windows.focused = focused;
-            }
         }
     }
 
     pub(crate) fn show_document_workspace(&mut self, ui: &mut egui::Ui) -> bool {
         if !self.has_document_panes() {
             self.shared_windows.area = None;
+            self.shared_windows.primary_rect = None;
             return false;
         }
-        ui.horizontal_wrapped(|ui| {
-            if ui.button(tl!("Open…")).clicked() {
-                self.open_dialog();
-            }
-            ui.menu_button(tl!("Open in Internal Window"), |ui| {
-                let docs: Vec<_> = self.session.docs().iter().map(|d| (d.id, d.name.clone())).collect();
-                for (id, name) in docs {
-                    if ui.button(name).clicked() {
-                        if let Err(error) = self.open_document_pane(id) {
-                            self.notify_error(error);
-                        }
-                        ui.close();
+        let count = usize::from(self.active.is_some()) + self.shared_windows.entries.iter().filter(|w| w.embedded && !w.app.views.is_empty()).count();
+        if count == 0 {
+            return false;
+        }
+        let ctx = ui.ctx().clone();
+        let available = ui.available_size();
+        let width = available.x.max(count as f32 * MIN_COLUMN + count.saturating_sub(1) as f32 * SPLIT_GAP);
+        if self.shared_windows.widths.len() != count {
+            self.shared_windows.widths = vec![1.0; count];
+        }
+        egui::ScrollArea::horizontal().id_salt("document-split-scroll").auto_shrink([false, false]).show(ui, |ui| {
+            let (area, _) = ui.allocate_exact_size(egui::vec2(width, ui.available_height()), egui::Sense::hover());
+            self.shared_windows.area = Some(area.intersect(ui.clip_rect()));
+            let rects = column_rects(area, &self.shared_windows.widths);
+            let t = theme::Tokens::get(&ctx);
+            for (index, pair) in rects.windows(2).enumerate() {
+                let separator = egui::Rect::from_min_max(pair[0].right_top(), pair[1].left_bottom());
+                let response = ui
+                    .interact(separator, ui.id().with(("column-separator", index)), egui::Sense::drag())
+                    .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+                ui.painter().rect_filled(separator, 0.0, if response.hovered() || response.dragged() { t.accent } else { t.divider });
+                if response.dragged() {
+                    let left = pair[0].width();
+                    let right = pair[1].width();
+                    let minimum = 100.0_f32.min((left + right) * 0.25);
+                    let delta = ctx.input(|i| i.pointer.delta().x).clamp(minimum - left, right - minimum);
+                    let total_width = (area.width() - count.saturating_sub(1) as f32 * SPLIT_GAP).max(1.0);
+                    let total_weight: f32 = self.shared_windows.widths.iter().sum();
+                    if let Some(weight) = self.shared_windows.widths.get_mut(index) {
+                        *weight += delta * total_weight / total_width;
                     }
+                    if let Some(weight) = self.shared_windows.widths.get_mut(index + 1) {
+                        *weight -= delta * total_weight / total_width;
+                    }
+                    ctx.request_repaint();
+                }
+            }
+            // Keep the unclipped row for sibling geometry; focus separately uses the viewport.
+            self.shared_windows.primary_rect = self.active.and_then(|_| rects.first().copied());
+            if let Some(index) = self.active
+                && let Some(rect) = rects.first().copied()
+            {
+                let title = self.views.get(index).and_then(|v| self.session.get(v.id)).map(|d| d.name.clone()).unwrap_or_default();
+                let mut child = ui.new_child(egui::UiBuilder::new().id_salt("primary-document-column").max_rect(rect));
+                child.set_clip_rect(rect.intersect(ui.clip_rect()));
+                let _keyboard = KeyboardLease::new(&ctx, self.primary_keyboard_active());
+                column_header(&mut child, &title, self.shared_windows.focused.is_none(), false);
+                self.column_navigation(&mut child);
+                match crate::compare_ui::side_by_side(self, index) {
+                    Some((old, new)) => crate::compare_ui::compare_area(self, old, new, &mut child),
+                    None => canvas::document_area(self, index, &mut child),
+                }
+            }
+            self.show_shared_views(&ctx, Some((ui, rects)));
+        });
+        true
+    }
+
+    fn column_navigation(&mut self, ui: &mut egui::Ui) {
+        let Some(index) = self.active else { return };
+        let Some(view) = self.views.get_mut(index) else { return };
+        ui.horizontal(|ui| {
+            if ui.small_button("◀").clicked() {
+                view.step_page(false);
+            }
+            let pages = self.session.get(view.id).map_or(0, |d| d.info.pages.len());
+            let mut page = view.current.saturating_add(1);
+            if ui.add(egui::DragValue::new(&mut page).range(1..=pages.max(1))).changed() {
+                view.go_to_page(page.saturating_sub(1));
+            }
+            ui.label(format!("/ {pages}"));
+            if ui.small_button("▶").clicked() {
+                view.step_page(true);
+            }
+            if ui.small_button("−").clicked() {
+                view.zoom_step(false);
+            }
+            if ui.small_button("+").clicked() {
+                view.zoom_step(true);
+            }
+            ui.menu_button(tl!("Zoom"), |ui| {
+                if ui.button(tl!("Fit to width")).clicked() {
+                    view.fit = canvas::Fit::Width;
+                    ui.close();
+                }
+                if ui.button(tl!("Fit one full page")).clicked() {
+                    view.fit = canvas::Fit::Page;
+                    ui.close();
                 }
             });
-            if ui.button(tl!("Tile document windows")).clicked() {
-                self.arrange_document_panes(false);
-            }
-            if ui.button(tl!("Cascade document windows")).clicked() {
-                self.arrange_document_panes(true);
-            }
         });
-        let area = ui.available_rect_before_wrap();
-        self.shared_windows.area = Some(area);
-        ui.allocate_rect(area, egui::Sense::hover());
-        let Some(index) = self.active else { return true };
-        let Some(doc) = self.views.get(index).and_then(|v| self.session.get(v.id)) else { return true };
-        let title = format!("{} — {}", doc.name, tl!("Primary view"));
-        let count = 1 + self.shared_windows.entries.iter().filter(|w| w.embedded).count();
-        let ctx = ui.ctx().clone();
-        let _keyboard = KeyboardLease::new(&ctx, self.primary_keyboard_active());
-        egui::Window::new(title)
-            .id(pane_id(0, self.shared_windows.revision))
-            .default_rect(pane_rect(area, 0, count, self.shared_windows.cascade))
-            .constrain_to(area)
-            .max_size(area.size().max(egui::vec2(230.0, 160.0)))
-            .min_size([230.0, 160.0])
-            .collapsible(false)
-            .fade_in(false)
-            .show(&ctx, |ui| match crate::compare_ui::side_by_side(self, index) {
-                Some((old, new)) => crate::compare_ui::compare_area(self, old, new, ui),
-                None => canvas::document_area(self, index, ui),
-            });
-        true
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -280,7 +373,7 @@ impl PdfCraftApp {
         self.open_document_view(id, false)
     }
 
-    /// Add a movable document window inside the application's workspace.
+    /// Add a fixed reading column inside the application workspace.
     pub fn open_document_pane(&mut self, id: DocId) -> Result<(), String> {
         self.open_document_view(id, true)
     }
@@ -315,6 +408,14 @@ impl PdfCraftApp {
         app.comment_prefs = self.comment_prefs.clone();
         app.right = self.right;
         app.active = Some(0);
+        if embedded {
+            view.fit = canvas::Fit::Width;
+            if !self.has_document_panes()
+                && let Some(primary) = self.active.and_then(|index| self.views.get_mut(index))
+            {
+                primary.fit = canvas::Fit::Width;
+            }
+        }
         app.views.push(view);
         app.shared_windows.secondary = true;
         app.shared_windows.embedded = embedded;
@@ -331,7 +432,7 @@ impl PdfCraftApp {
         self.shared_windows.entries.push(Window { id: view_id, embedded, rect: None, viewport, app, client: None });
         if embedded {
             self.shared_windows.focused = Some(view_id);
-            self.arrange_document_panes(false);
+            self.arrange_document_panes();
         }
         if let Some(ctx) = &self.ctx {
             ctx.request_repaint();
@@ -449,18 +550,25 @@ impl PdfCraftApp {
     }
 
     pub(crate) fn show_shared_windows(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.show_shared_views(ctx, None);
+    }
+
+    fn show_shared_views(&mut self, ctx: &egui::Context, mut panes: Option<(&mut egui::Ui, Vec<egui::Rect>)>) {
         // Own edits already refreshed their local view. Only a later change from a sibling
         // should invalidate it on the next pass.
-        for view in &self.views {
-            if self.shared_windows.versions.contains_key(&view.id)
-                && let Some(doc) = self.session.get(view.id)
-            {
-                self.shared_windows.versions.insert(view.id, doc.edit_generation());
+        // Embedded columns run before the later native-window pass. Do not acknowledge a
+        // column's edit on behalf of the primary renderer before it has adopted that edit.
+        if panes.is_some() || !self.has_document_panes() || self.full_screen {
+            for view in &self.views {
+                if self.shared_windows.versions.contains_key(&view.id)
+                    && let Some(doc) = self.session.get(view.id)
+                {
+                    self.shared_windows.versions.insert(view.id, doc.edit_generation());
+                }
             }
         }
         let mut windows = std::mem::take(&mut self.shared_windows.entries);
         let mut pane_index = usize::from(self.active.is_some());
-        let pane_count = pane_index + windows.iter().filter(|w| w.embedded && !w.app.views.is_empty()).count();
         let root_modal = self.modal_open() || self.palette_open;
         let mut requests = Vec::new();
         for index in 0..windows.len() {
@@ -471,6 +579,9 @@ impl PdfCraftApp {
                 .chain(windows.iter().enumerate().filter(|(i, _)| *i != index).flat_map(|(_, w)| w.app.views.iter().map(|v| v.id)))
                 .collect();
             let Some(window) = windows.get_mut(index) else { continue };
+            if window.embedded != panes.is_some() {
+                continue;
+            }
             window.app.shared_windows.elsewhere = elsewhere;
             window.app.language = self.language.clone();
             window.app.theme = self.theme;
@@ -486,25 +597,21 @@ impl PdfCraftApp {
                 #[cfg(not(target_arch = "wasm32"))]
                 let lease = lease.with_watch(&mut self.watch);
                 if window.embedded {
-                    if let Some(area) = self.shared_windows.area {
-                        let mut open = true;
+                    if let Some((parent, rects)) = panes.as_mut()
+                        && let Some(rect) = rects.get(pane_index).copied()
+                    {
+                        window.rect = Some(rect);
+                        let mut child = parent.new_child(egui::UiBuilder::new().id_salt(("document-column", window.id)).max_rect(rect));
+                        child.set_clip_rect(rect.intersect(parent.clip_rect()));
+                        if root_modal {
+                            child.disable();
+                        }
                         let _keyboard = KeyboardLease::new(ctx, lease.app.shared_windows.input_active);
-                        let response = egui::Window::new(title)
-                            .id(pane_id(window.id, self.shared_windows.revision))
-                            .open(&mut open)
-                            .default_rect(pane_rect(area, pane_index, pane_count, self.shared_windows.cascade))
-                            .constrain_to(area)
-                            .max_size(area.size().max(egui::vec2(230.0, 160.0)))
-                            .min_size([230.0, 160.0])
-                            .collapsible(false)
-                            .fade_in(false)
-                            .enabled(!root_modal)
-                            .show(ctx, |ui| lease.app.shared_window_ui(ui));
-                        window.rect = response.map(|r| r.response.rect);
-                        if !open {
+                        if column_header(&mut child, &title, self.shared_windows.focused == Some(window.id), true) {
                             lease.app.request_close_tab(0);
                             self.shared_windows.focused = Some(window.id);
                         }
+                        lease.app.shared_window_ui(&mut child);
                     }
                     pane_index += 1;
                 } else {
@@ -595,26 +702,29 @@ impl PdfCraftApp {
         let viewport = self.views[0].ui_namespace;
         egui::Panel::top(egui::Id::new(("shared-toolbar", viewport))).show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                for (label, command) in
-                    [("Save", "file.save"), ("Save as…", "file.save_as"), ("Undo", "edit.undo"), ("Redo", "edit.redo"), ("Find…", "edit.find")]
-                {
-                    let enabled = pdfcraft_engine::commands::command(command).is_some_and(|spec| self.command_enabled(spec));
-                    if ui.add_enabled(enabled, egui::Button::new(tl!(label))).clicked() {
-                        self.execute(command);
+                ui.menu_button(tl!("Menu"), |ui| {
+                    for (label, command) in [
+                        ("Save", "file.save"),
+                        ("Save as…", "file.save_as"),
+                        ("Undo", "edit.undo"),
+                        ("Redo", "edit.redo"),
+                        ("Find…", "edit.find"),
+                        ("Open in Right Split", "view.new_pane"),
+                    ] {
+                        let enabled = pdfcraft_engine::commands::command(command).is_some_and(|spec| self.command_enabled(spec));
+                        if ui.add_enabled(enabled, egui::Button::new(tl!(label))).clicked() {
+                            self.execute(command);
+                            ui.close();
+                        }
                     }
-                }
-                if ui.button(tl!("Open in Internal Window")).clicked()
-                    && let Some((_, id)) = self.active_ids()
-                {
-                    let _ = self.open_document_pane(id);
-                }
-                if !self.shared_windows.embedded
-                    && ui.button(tl!("Show primary window")).clicked()
-                    && let Some((_, id)) = self.active_ids()
-                {
-                    self.shared_windows.restore_primary = Some(id);
-                }
-                ui.separator();
+                    if !self.shared_windows.embedded
+                        && ui.button(tl!("Show primary window")).clicked()
+                        && let Some((_, id)) = self.active_ids()
+                    {
+                        self.shared_windows.restore_primary = Some(id);
+                        ui.close();
+                    }
+                });
                 for (label, panel) in
                     [("Comments", RightPanel::Comments), ("Bookmarks", RightPanel::Bookmarks), ("Page thumbnails", RightPanel::Pages)]
                 {
@@ -623,39 +733,17 @@ impl PdfCraftApp {
                     }
                 }
             });
-            ui.horizontal_wrapped(|ui| {
-                let view = &mut self.views[0]; // The nonempty view was checked above; this shell holds one view.
-                if ui.button("◀").clicked() {
-                    view.step_page(false);
-                }
-                let pages = self.session.get(view.id).map_or(0, |d| d.info.pages.len());
-                let mut page = view.current.saturating_add(1);
-                if ui.add(egui::DragValue::new(&mut page).range(1..=pages.max(1))).changed() {
-                    view.go_to_page(page.saturating_sub(1));
-                }
-                ui.label(format!("/ {pages}"));
-                if ui.button("▶").clicked() {
-                    view.step_page(true);
-                }
-                if ui.button("−").clicked() {
-                    view.zoom_step(false);
-                }
-                if ui.button("+").clicked() {
-                    view.zoom_step(true);
-                }
-                if ui.button(tl!("Fit to width")).clicked() {
-                    view.fit = canvas::Fit::Width;
-                }
-                if ui.button(tl!("Fit one full page")).clicked() {
-                    view.fit = canvas::Fit::Page;
-                }
-                if self.session.get(view.id).is_some_and(|d| d.dirty) {
-                    ui.label(tl!("Unsaved changes"));
-                }
-                ui.label(tl!("Edits are shared; reading positions are independent"));
-            });
+            self.column_navigation(ui);
         });
-        if self.right.is_some() {
+        if self.right.is_some() && self.shared_windows.embedded && ui.available_width() < 560.0 {
+            let height = (ui.available_height() * 0.4).clamp(90.0, 300.0);
+            egui::Panel::bottom(egui::Id::new(("column-inspector", viewport)))
+                .resizable(true)
+                .default_size(height)
+                .min_size(80.0)
+                .max_size(height.max(80.0))
+                .show(ui, |ui| panels::right_panel(self, ui));
+        } else if self.right.is_some() {
             egui::Panel::right(egui::Id::new(("shared-inspector", viewport)))
                 .resizable(true)
                 .default_size(300.0)
@@ -838,12 +926,10 @@ impl PdfCraftApp {
                 Ok(serde_json::json!({"closed": lease.app.views.is_empty(), "close_prompt": lease.app.close_request.is_some()}))
             }
             "focus" => {
-                if let Some(ctx) = &lease.app.ctx {
-                    if window.embedded {
-                        ctx.move_to_top(egui::LayerId::new(egui::Order::Middle, pane_id(window.id, self.shared_windows.revision)));
-                    } else {
-                        ctx.send_viewport_cmd_to(window.viewport, ViewportCommand::Focus);
-                    }
+                if let Some(ctx) = &lease.app.ctx
+                    && !window.embedded
+                {
+                    ctx.send_viewport_cmd_to(window.viewport, ViewportCommand::Focus);
                 }
                 Ok(serde_json::json!({"view":window.id}))
             }
@@ -1052,6 +1138,24 @@ mod tests {
             lease.app.views[0].page_input_id(),
             crate::DocView::new(id, &lease.app.session.get(id).unwrap().info, Default::default()).page_input_id()
         );
+    }
+
+    #[test]
+    fn native_pass_does_not_acknowledge_an_embedded_edit_before_primary_refresh() {
+        let (mut app, id) = app();
+        app.open_document_pane(id).unwrap();
+        app.sync_shared_document_views();
+        let before = app.shared_windows.versions[&id];
+        {
+            let lease = Lease::new(&mut app.session, &mut app.shared_windows.entries[0].app);
+            assert!(lease.app.apply_edit(note(1, "refresh all reading columns")));
+        }
+        let generation = app.session.get(id).unwrap().edit_generation();
+        assert_ne!(before, generation);
+        app.show_shared_views(&egui::Context::default(), None);
+        assert_eq!(app.shared_windows.versions[&id], before, "the primary has not rendered the embedded edit yet");
+        app.sync_shared_document_views();
+        assert_eq!(app.shared_windows.versions[&id], generation);
     }
 
     #[test]
@@ -1273,10 +1377,10 @@ mod tests {
     }
 
     #[test]
-    fn tiled_panes_are_disjoint_and_within_the_workspace() {
+    fn fixed_columns_are_disjoint_and_within_the_workspace() {
         let area = egui::Rect::from_min_max(egui::pos2(20.0, 90.0), egui::pos2(1420.0, 950.0));
         for count in 2..=16 {
-            let rects: Vec<_> = (0..count).map(|index| pane_rect(area, index, count, false)).collect();
+            let rects: Vec<_> = (0..count).map(|index| column_rects(area, &vec![1.0; count])[index]).collect();
             for (i, rect) in rects.iter().enumerate() {
                 assert!(area.contains_rect(*rect));
                 assert!(rect.is_positive());

@@ -731,6 +731,11 @@ impl Host for crate::PdfCraftApp {
         let pending_opens: Vec<Value> = Vec::new();
         json!({
             "document_windows": self.shared_windows_state(),
+            "document_workspace": {
+                "layout": "columns",
+                "primary_rect": self.shared_windows.primary_rect.map(|r| [r.min.x, r.min.y, r.max.x, r.max.y]),
+                "viewport": self.shared_windows.area.map(|r| [r.min.x, r.min.y, r.max.x, r.max.y]),
+            },
             "primary_hidden": self.shared_windows.hidden,
             "docking": self.docking,
             "documents": docs,

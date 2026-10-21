@@ -2404,7 +2404,7 @@ animation effects	Off	关
 	Edits are shared; reading positions are independent	修改实时同步，阅读位置互不影响
 	Post or cancel the unfinished comment before closing this view	请先发布或取消尚未提交的批注，再关闭此窗口
 	Unsaved changes	有未保存的修改
-	Open in Internal Window	在软件内新建窗口
-	Tile document windows	平铺文档窗口
-	Cascade document windows	层叠文档窗口
+	Open in Right Split	在右侧分栏打开
+	Read Side by Side	并排阅读
+	Reset Split Widths	重置分栏宽度
 	Primary view	主视图

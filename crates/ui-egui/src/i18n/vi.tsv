@@ -2693,7 +2693,7 @@ key	Space	Space
 	Edits are shared; reading positions are independent	Các chỉnh sửa được chia sẻ; vị trí đọc độc lập
 	Post or cancel the unfinished comment before closing this view	Đăng hoặc hủy bình luận chưa hoàn tất trước khi đóng chế độ xem này
 	Unsaved changes	Thay đổi chưa lưu
-	Open in Internal Window	Mở trong cửa sổ nội bộ
-	Tile document windows	Xếp các cửa sổ tài liệu cạnh nhau
-	Cascade document windows	Xếp các cửa sổ tài liệu chồng lên nhau
+	Open in Right Split	Mở trong cột bên phải
+	Read Side by Side	Đọc cạnh nhau
+	Reset Split Widths	Đặt lại độ rộng cột
 	Primary view	Chế độ xem chính

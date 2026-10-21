@@ -23,15 +23,15 @@ notes = "Multiple desktop reading/annotation windows over the same DocId and Ses
 
 [[feature]]
 id = "view.document-workspace"
-title = "Movable internal windows for the same or different PDFs"
+title = "Fixed side-by-side reading columns for the same or different PDFs"
 area = "B"
 tier = "P1"
 milestone = "M3"
 status = "shipped"
 commands = ["view.new_pane", "view.tile_windows", "view.cascade_windows"]
 tools = []
-evidence = ["crates/ui-egui/tests/control.rs::internal_windows_mix_documents_and_only_the_focused_view_receives_navigation", "crates/ui-egui/tests/control.rs::internal_comment_inputs_publish_to_one_document_and_keep_unposted_notes_on_close", "crates/ui-egui/src/shared_windows.rs::cancelled_quit_preserves_all_internal_reading_positions", "crates/ui-egui/src/shared_windows.rs::native_close_protects_an_internal_only_document_and_its_unposted_note"]
-notes = "One application window contains resizable movable PDF child windows, a primary view, document picker, tile/cascade arrangements and selected-view keyboard routing. Same/different files can be mixed. Defaults to Simplified Chinese and preserves explicit saved language choices. Internal windows use the main opt-in input/inspection/screenshot tree and view-targeted state/set/command. Native window-close includes internal-only documents/drafts; cancelling quit preserves original windows. Layout and extra views are not restored across restart."
+evidence = ["crates/ui-egui/tests/control.rs::side_by_side_button_opens_existing_tabs_and_repeated_files_in_fixed_columns", "crates/ui-egui/tests/control.rs::internal_windows_mix_documents_and_only_the_focused_view_receives_navigation", "crates/ui-egui/tests/control.rs::internal_comment_inputs_publish_to_one_document_and_keep_unposted_notes_on_close", "crates/ui-egui/src/shared_windows.rs::cancelled_quit_preserves_all_internal_reading_positions", "crates/ui-egui/src/shared_windows.rs::native_close_protects_an_internal_only_document_and_its_unposted_note"]
+notes = "One application window contains fixed full-height reading columns with draggable separators, a primary tab view, direct side-by-side opening of existing tabs and selected-view keyboard routing. Explicit right-split requests can open the same file repeatedly; columns are clipped to the reading workspace and overflow horizontally on narrow windows. Legacy tile/cascade command ids now mean read tabs side by side/reset column widths. Same/different files can be mixed. Defaults to Simplified Chinese and preserves explicit saved language choices. Internal windows use the main opt-in input/inspection/screenshot tree and view-targeted state/set/command. Native window-close includes internal-only documents/drafts; cancelling quit preserves original windows. Layout and extra views are not restored across restart."
 
 # ==================================================================================================
 # A. Core document model and fidelity

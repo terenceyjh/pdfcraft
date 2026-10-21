@@ -197,9 +197,9 @@ pub const COMMANDS: &[CommandSpec] = &[
     c("edit.advanced_search", "Advanced search…", EDIT, Some(Shortcut::cmd_shift("F")), Document, "search"),
     c("view.palette", "Find tools and commands…", VIEW, Some(Shortcut::cmd("K")), Nothing, "search"),
     c("view.new_window", "Open in New Window", VIEW, None, Document, "copy"),
-    c("view.new_pane", "Open in Internal Window", VIEW, None, Document, "copy"),
-    c("view.tile_windows", "Tile document windows", VIEW, None, Nothing, "layout-grid"),
-    c("view.cascade_windows", "Cascade document windows", VIEW, None, Nothing, "layers"),
+    c("view.new_pane", "Open in Right Split", VIEW, None, Document, "copy"),
+    c("view.tile_windows", "Read Side by Side", VIEW, None, Nothing, "layout-grid"),
+    c("view.cascade_windows", "Reset Split Widths", VIEW, None, Nothing, "layers"),
     // Page display: View ▸ Page display and the rail's button list the base layouts as radios and
     // continuous scrolling as a checkbox, so `menu = None` keeps them out of the generated menus.
     // The palette still runs them.

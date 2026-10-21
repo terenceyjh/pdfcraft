@@ -2717,7 +2717,7 @@ certificate	Version	الإصدار
 	Edits are shared; reading positions are independent	التعديلات مشتركة؛ مواضع القراءة مستقلة
 	Post or cancel the unfinished comment before closing this view	انشر التعليق غير المكتمل أو ألغِه قبل إغلاق هذا العرض
 	Unsaved changes	تغييرات غير محفوظة
-	Open in Internal Window	فتح في نافذة داخلية
-	Tile document windows	تجانب نوافذ المستندات
-	Cascade document windows	تتالي نوافذ المستندات
+	Open in Right Split	فتح في العمود الأيمن
+	Read Side by Side	قراءة جنبًا إلى جنب
+	Reset Split Widths	إعادة تعيين عرض الأعمدة
 	Primary view	العرض الرئيسي

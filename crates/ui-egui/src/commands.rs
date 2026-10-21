@@ -83,7 +83,7 @@ impl PdfCraftApp {
         if !self.secondary_command_allowed(spec.id) || (spec.id == "view.new_window" && cfg!(target_arch = "wasm32")) {
             return false;
         }
-        if matches!(spec.id, "view.tile_windows" | "view.cascade_windows") && !self.has_document_panes() {
+        if spec.id == "view.cascade_windows" && !self.has_document_panes() {
             return false;
         }
         // Undo and Redo act on the Combine files list while its tab shows.
@@ -165,8 +165,8 @@ impl PdfCraftApp {
                     self.notify_error(error);
                 }
             }
-            "view.tile_windows" => self.arrange_document_panes(false),
-            "view.cascade_windows" => self.arrange_document_panes(true),
+            "view.tile_windows" => self.read_tabs_side_by_side(),
+            "view.cascade_windows" => self.arrange_document_panes(),
             "ui.dock.reset" => {
                 if let Err(error) = crate::docking::command(self, true, &serde_json::Value::Null) {
                     self.notify(error);

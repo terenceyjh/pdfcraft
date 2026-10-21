@@ -3158,6 +3158,7 @@ impl eframe::App for PdfCraftApp {
         }
         if self.full_screen && self.active.is_some() {
             self.shared_windows.area = None;
+            self.shared_windows.primary_rect = None;
             // Full screen: the page, nothing else (Esc or ⌘L to leave).
             let t = theme::Tokens::get(&ctx);
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(if t.dark() { t.pasteboard } else { egui::Color32::from_gray(32) })).show(
@@ -3202,7 +3203,7 @@ impl eframe::App for PdfCraftApp {
         let t = theme::Tokens::get(&ctx);
         egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.pasteboard)).show(ui, |ui| {
             if self.mode == Mode::Read && self.show_document_workspace(ui) {
-                // The workspace draws its primary view and movable document windows.
+                // The workspace draws fixed columns directly inside the reading area.
             } else if self.mode == Mode::Read {
                 match self.active {
                     None if self.combine_showing() => combine_ui::page(self, ui),

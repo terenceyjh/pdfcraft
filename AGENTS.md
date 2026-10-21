@@ -207,6 +207,43 @@ Follow `CLAUDE.md`. It covers quality gates, layering, commit rules and how to r
 - `.tools/` and `target/` remain ignored: toolchains, downloaded caches, portable QA
   settings, test PDFs, screenshots and authentication-helper scratch files are not published.
 
+## Local development log — fixed side-by-side reading columns (2026-10-21)
+
+- The user replaced the floating internal-window direction with fixed, full-height reading
+  columns. The baseline is `4926c89b`, the plan is `ad70f096`, and current design, usage,
+  validation and publishing instructions are in `docs/split-reading-workspace.md`.
+- `shared_windows.rs` now lays out ordinary clipped child UIs inside the reading workspace;
+  document Window/Area containers, title-bar dragging and cascade layout are removed.
+  Separators resize adjacent columns; narrow workspaces scroll horizontally. Closing a
+  column refills the row; closing all extra columns restores the original tabbed reader.
+- The top tab strip exposes Read Side by Side. It opens other existing tabs in columns
+  once; explicit Open in Right Split supports repeated views of the same file. Original
+  tabs remain available. Existing command ids remain compatible: `view.new_pane` adds
+  a right column, `view.tile_windows` lays out tabs, `view.cascade_windows` resets widths.
+- Shared Session ownership, independent reading/draft/render state, native windows and
+  close/quit/recovery protection remain. Focus now follows clipped column rectangles.
+  A second native rendering pass must not acknowledge embedded edits before the primary
+  renderer refreshes; a regression was observed failing with that protection removed.
+- Added workspace geometry to the existing opt-in `ui.state`; no new listeners. Narrow
+  columns put their comment/navigation inspector below the page. Updated three original
+  labels across all 22 catalogs and their ATTRIBUTION.toml hashes; no new assets or fonts.
+- Relevant UI validation: 486 unit tests passing with 1 original ignored, and commands 24,
+  comments 51, control 57, recovery 12, reload 11 passing (641 total). New coverage includes
+  existing-tab layout, repeated same-file columns, fixed headers, separator resizing,
+  horizontal scrolling, main-window resizing, independent input and column close/refill.
+  Existing Read-button tests now select the exact label because Read Side by Side also
+  matches a substring inspection query. Four engine registry tests also pass (645 total).
+- Final checks pass: native engine/UI Clippy --all-targets -D warnings, formatting, diff,
+  37-crate layers, assets, parity, wasm compilation (existing warnings) and desktop build.
+  Native QA verified the top action, actual tab context menu, three fixed columns at
+  pages 2/1/3, separator resizing, immovable headers, two actual Chinese note editors,
+  draft close/quit protection, shared save/undo/redo and column close/refill. Independent
+  CLI reopen confirms 6 annotations versus 4 in the untouched other PDF. Screenshots were
+  inspected; the QA instance quit cleanly. All QA data stays ignored under `target/qa`.
+- Continue on `feat/shared-document-windows`; publish to the personal fork `origin`
+  after verification, as the user requested. Preserve history; never force-push or push
+  directly to main. Rust/toolchain/cache/build files stay inside this project.
+
 ## Contributor credits (About window)
 
 - About ▸ Contributors/Models are compiled into the binary from `contributors/contributors.json`

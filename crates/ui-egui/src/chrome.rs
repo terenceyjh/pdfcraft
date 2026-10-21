@@ -73,7 +73,8 @@ pub fn tab_strip(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                     + window_controls::width(&controls.right);
                 // Open stays in sight after the tabs: its icon, text and padding, and the gaps around it.
                 let open_width = ui.fonts_mut(|f| f.layout_no_wrap(tl!("Open").into(), theme::medium(13.0), t.text).size().x) + 38.0 + 12.0;
-                let mut tabs_width = (ui.available_width() - controls_width - open_width).max(0.0);
+                let split_width = ui.fonts_mut(|f| f.layout_no_wrap(tl!("Read Side by Side").into(), theme::medium(13.0), t.text).size().x) + 50.0;
+                let mut tabs_width = (ui.available_width() - controls_width - open_width - split_width).max(0.0);
                 // Tabs shrink to share the strip (names end in "…") and scroll only once they reach
                 // their narrowest; then arrows either side say so and step through them.
                 let mut natural: Vec<f32> = Vec::with_capacity(app.views.len() + 1);
@@ -154,7 +155,7 @@ pub fn tab_strip(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                                 let id = app.views[i].id;
                                 let reveal = cfg!(not(target_arch = "wasm32")) && doc.path.is_some();
                                 response.context_menu(|ui| {
-                                    if ui.button(tl!("Open in Internal Window")).clicked() {
+                                    if ui.button(tl!("Open in Right Split")).clicked() {
                                         action = Some(crate::tab_context::Action::NewPane(id));
                                         ui.close();
                                     }
@@ -276,6 +277,9 @@ pub fn tab_strip(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                 let tip = crate::commands::command_tip(ui.ctx(), tl!("Open a PDF ({key})"), "file.open");
                 if widgets::ghost_button_sized(ui, "plus", tl!("Open"), tab_h).on_hover_text(tip).clicked() {
                     app.open_dialog();
+                }
+                if ui.add_enabled(app.active.is_some(), egui::Button::new(tl!("Read Side by Side"))).clicked() {
+                    app.execute("view.tile_windows");
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if !controls.right.is_empty() {
