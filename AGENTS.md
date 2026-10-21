@@ -197,6 +197,16 @@ Follow `CLAUDE.md`. It covers quality gates, layering, commit rules and how to r
   portable application data remain under this project. Layout is not restored across
   restart; independently launched processes do not share a Session.
 
+## Personal fork and Git remotes (2026-10-21)
+
+- Personal fork: `https://github.com/terenceyjh/pdfcraft`; local `origin` points there.
+  The original repository is retained as `upstream`: `https://github.com/storytold/pdfcraft`.
+- Development branch: `feat/shared-document-windows`. Publish development commits to
+  `origin`; local `remote.pushDefault` is `origin`. Keep the staged history and the
+  existing main-branch policy; an upstream contribution is a separate user request.
+- `.tools/` and `target/` remain ignored: toolchains, downloaded caches, portable QA
+  settings, test PDFs, screenshots and authentication-helper scratch files are not published.
+
 ## Contributor credits (About window)
 
 - About ▸ Contributors/Models are compiled into the binary from `contributors/contributors.json`

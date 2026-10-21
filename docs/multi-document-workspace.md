@@ -73,6 +73,10 @@
 
 ## Git 检查与回退
 
+个人仓库：[terenceyjh/pdfcraft](https://github.com/terenceyjh/pdfcraft)。开发代码在
+[feat/shared-document-windows 分支](https://github.com/terenceyjh/pdfcraft/tree/feat/shared-document-windows)。
+本地 `origin` 指向个人 fork，`upstream` 保留原仓库；默认推送目标为 `origin`。
+
 - `751b118f`：上一阶段双原生窗口基线。
 - `686d7be4`：本次开发路线。
 - `4fbbe4b2`：默认简体中文、提示文字与语言保存回归。
